@@ -11,7 +11,7 @@
 // getValue() is a simple walk and round-trips exactly with what compile.py
 // parses.
 
-import { el, floatAbove } from "./dom.js";
+import { el, floatAbove, icon } from "./dom.js";
 import { t } from "./i18n.js";
 import { listAssets, viewUrl } from "./api.js";
 import { tagIndex } from "./state.js";
@@ -52,6 +52,22 @@ export class PromptBox {
     for (const name of ["keyup", "pointerdown", "pointerup", "wheel"]) {
       this.root.addEventListener(name, (event) => event.stopPropagation());
     }
+
+    // The box's own disclosure, shown only while a rewrite stands in for it.
+    // `frame` is what a caller mounts; `root` stays the editable, because
+    // everything else in here — the caret, the chips, the @ menu — is about
+    // the editable and nothing about the wrapper.
+    this.superseded = false;
+    this.excerpt = el("span", { class: "mmc-prompt-excerpt" });
+    this.head = el("summary", { class: "mmc-prompt-head" }, [
+      icon("chevron", 12),
+      el("span", { class: "mmc-prompt-head-name", text: t("your prompt") }),
+      this.excerpt,
+    ]);
+    this.frame = el("details", { class: "mmc-prompt-fold" }, [this.head, this.root]);
+    this.frame.open = true;
+    this.frame.addEventListener("toggle", () => this.syncExcerpt());
+    this.frame.addEventListener("pointerdown", (event) => event.stopPropagation());
   }
 
   // ---- value <-> DOM -------------------------------------------------------
@@ -70,6 +86,7 @@ export class PromptBox {
   setValue(text) {
     if (this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
+    this.syncExcerpt();
   }
 
   /** Text -> [text nodes, chip spans]. Only handles with a live asset — the
@@ -104,20 +121,47 @@ export class PromptBox {
   }
 
   /**
-   * Dim the box while a rewrite stands in for it.
+   * Dim the box while a rewrite stands in for it — and fold it away.
    *
    * `compile.refined_body` replaces this text outright rather than adding to it,
    * so with a rewrite switched on the sentence in here is not queued at all —
    * it is only what the rewrite was written from. Nothing on screen said so, and
    * a full-brightness box in the middle of the panel reads as the thing being
-   * sent. Still editable, because editing it is how you ask for a new one.
+   * sent.
+   *
+   * Dimming said it but did not make room for the rewrite that *is* queued: two
+   * full descriptions of the same shot, stacked, doubled the node's height and
+   * pushed the one that matters below the fold. So the box now folds into its
+   * own first line the moment a rewrite takes over, and the chevron opens it
+   * again — it is still editable, because editing it is how you ask for a new
+   * rewrite. Only the transition folds it: a second refine leaves a box you
+   * deliberately opened open.
    */
   setSuperseded(on) {
-    this.root.classList.toggle("superseded", !!on);
-    this.root.title = on
-      ? t("Not queued while the rewrite below is on — that is what the model reads. "
-        + "Edit this and refine again, or revert the rewrite, to send it.")
-      : "";
+    on = !!on;
+    const changed = on !== this.superseded;
+    this.superseded = on;
+    this.frame.classList.toggle("superseded", on);
+    // Never folded while this is the prompt being queued: there would be
+    // nothing standing in for it and no way back to the thing you are writing.
+    if (changed || !on) this.frame.open = !on;
+    this.root.classList.toggle("superseded", on);
+    const why = t("Not queued while the rewrite below is on — that is what the model reads. "
+                + "Edit this and refine again, or revert the rewrite, to send it.");
+    this.root.title = on ? why : "";
+    this.head.title = on ? why : "";
+    this.syncExcerpt();
+  }
+
+  /** The folded row shows the sentence's own first line, so the box can be
+   *  recognised without opening it. Newlines collapse: it is one line of room. */
+  syncExcerpt() {
+    if (!this.excerpt) return;
+    // From the state rather than by walking the box: `onInput` has already put
+    // the typed text there, and the state is what a rewrite is compared against.
+    const text = (this.hooks.getState().prompt ?? "").replace(/\s+/g, " ").trim();
+    this.excerpt.textContent = text || t("No prompt yet");
+    this.excerpt.classList.toggle("empty", !text);
   }
 
   /** Re-run the text through build(): an asset was added or removed, so some
@@ -126,12 +170,14 @@ export class PromptBox {
   refresh() {
     if (document.activeElement === this.root) return;
     this.root.replaceChildren(...this.build(this.hooks.getState().prompt ?? ""));
+    this.syncExcerpt();
   }
 
   // ---- editing -------------------------------------------------------------
 
   onEdit() {
     this.hooks.onInput(this.getValue());
+    this.syncExcerpt();
     const trigger = this.triggerRange();
     if (trigger) this.openMenu(trigger.query);
     else this.closeMenu();

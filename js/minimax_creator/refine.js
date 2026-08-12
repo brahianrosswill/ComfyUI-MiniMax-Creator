@@ -646,11 +646,12 @@ export class RefinePanel {
       parts.push(this.bodyBox);
 
       // Only the reference form has these, and only a refiner ever writes them —
-      // they are the three sections nothing can derive from a sentence. Open,
-      // not folded: this is where the format puts the references themselves —
-      // a @handle is defined here as a <Subject N> and the shot bodies speak in
-      // subjects from then on — so folding it away reads as the references
-      // having been dropped.
+      // they are the three sections nothing can derive from a sentence. Folded,
+      // like the prompt the rewrite stands in for: three more textareas held
+      // open under a rewrite this long is what doubled the node, and the summary
+      // is what stops folding them reading as the references having been
+      // dropped — it says where a @handle becomes the <Subject N> the shot
+      // bodies speak in, so the answer is one click away rather than absent.
       if (refined.sections) {
         const sections = el("div", { class: "mmc-refined-sections" });
         for (const name of REF_SECTIONS) {
@@ -662,12 +663,10 @@ export class RefinePanel {
               { rows: 3, className: "mmc-refined-box mmc-tl-small" }),
           ]));
         }
-        const fold = el("details", { class: "mmc-refined-fold" }, [
+        parts.push(el("details", { class: "mmc-refined-fold" }, [
           el("summary", { text: t("reference analysis — where your @references are defined") }),
           sections,
-        ]);
-        fold.open = true;
-        parts.push(fold);
+        ]));
       }
 
     }

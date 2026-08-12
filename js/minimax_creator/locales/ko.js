@@ -593,6 +593,7 @@ export const ko = {
  "{frames} frames at 24 fps": "24 fps 기준 {frames} 프레임",
  "{frames} frames — outside the ~5–15 s the weights were trained on.": "{frames} 프레임 — 가중치가 학습된 약 5–15초 범위를 벗어납니다.",
  "No prompt yet": "아직 프롬프트 없음",
+ "your prompt": "직접 쓴 프롬프트",
  "Not queued — this card's rewrite is. Open it to read or revert.": "큐에 없음 — 이 카드의 리라이트가 큐에 있습니다. 열어서 읽거나 되돌리세요.",
  "Edit": "편집",
  "Move earlier": "앞으로 이동",

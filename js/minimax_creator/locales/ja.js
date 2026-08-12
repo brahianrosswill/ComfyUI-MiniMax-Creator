@@ -593,6 +593,7 @@ export const ja = {
  "{frames} frames at 24 fps": "24 fps で {frames} フレーム",
  "{frames} frames — outside the ~5–15 s the weights were trained on.": "{frames} フレーム — ウェイトが学習した約 5–15 秒の範囲外です。",
  "No prompt yet": "プロンプトはまだありません",
+ "your prompt": "あなたのプロンプト",
  "Not queued — this card's rewrite is. Open it to read or revert.": "キューされていません — キューされるのはこのカードのリライトです。開いて確認・取り消しできます。",
  "Edit": "編集",
  "Move earlier": "前へ移動",

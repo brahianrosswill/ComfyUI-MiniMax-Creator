@@ -175,7 +175,9 @@ export class CreatorEditor {
       this.railHost,
       this.assetsHost,
       this.loraHost,
-      el("div", { class: "mmc-panel" }, [this.prompt.root, this.refinePanel.root, this.pillsHost]),
+      // `frame`, not `root`: the box brings its own disclosure, which folds it
+      // away once a rewrite is what gets queued.
+      el("div", { class: "mmc-panel" }, [this.prompt.frame, this.refinePanel.root, this.pillsHost]),
       this.noticeHost,
       this.samplingHost,
     ]);

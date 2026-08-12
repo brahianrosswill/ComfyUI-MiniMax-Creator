@@ -594,6 +594,7 @@ export const zh = {
  "{frames} frames at 24 fps": "24 fps 下 {frames} 帧",
  "{frames} frames — outside the ~5–15 s the weights were trained on.": "{frames} 帧——超出权重训练时的约 5–15 秒范围。",
  "No prompt yet": "还没有提示词",
+ "your prompt": "你写的提示词",
  "Not queued — this card's rewrite is. Open it to read or revert.": "未入队——入队的是此卡片的改写。打开可阅读或撤销。",
  "Edit": "编辑",
  "Move earlier": "前移",

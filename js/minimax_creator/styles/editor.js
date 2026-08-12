@@ -98,6 +98,38 @@ export const css = `
    still where the next rewrite comes from. */
 .mmc-prompt.superseded { opacity: .42; }
 .mmc-prompt.superseded:focus { opacity: .72; }
+
+/* ...and folded away, because dimming alone still gave two full descriptions of
+   the same shot the same room. The wrapper is what grows, so the box inside it
+   goes on filling the panel exactly as it did; closed, it gives its height back
+   to the rewrite that is actually queued. */
+.mmc-prompt-fold { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.mmc-prompt-fold:not([open]) { flex: 0 0 auto; }
+/* No disclosure until there is something standing in for the box: with no
+   rewrite this is the prompt, and a prompt does not need announcing. */
+.mmc-prompt-head { display: none; }
+.mmc-prompt-fold.superseded > .mmc-prompt-head {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  padding: 4px 6px; margin: -4px -6px; border-radius: 9px;
+  color: var(--mmc-dim); font-size: 12px; cursor: pointer; list-style: none;
+}
+.mmc-prompt-head::-webkit-details-marker { display: none; }
+.mmc-prompt-fold.superseded > .mmc-prompt-head:hover { color: var(--mmc-text); background: var(--mmc-surface-2); }
+.mmc-prompt-head svg {
+  width: 12px; height: 12px; flex: none; stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transform: rotate(-90deg); transition: transform .14s ease;
+}
+.mmc-prompt-fold[open] > .mmc-prompt-head svg { transform: none; }
+.mmc-prompt-head-name { flex: none; }
+/* The sentence's own first line, so the box can be recognised without opening
+   it. Hidden once it is open — the text itself is right underneath. */
+.mmc-prompt-excerpt {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--mmc-off);
+}
+.mmc-prompt-excerpt.empty { font-style: italic; }
+.mmc-prompt-fold[open] .mmc-prompt-excerpt { display: none; }
 /* .mmc-ref, not .mmc-chip: the refiner's language chips own that name, and the
    two rules fighting over it is what once turned these gray. */
 .mmc-ref {
