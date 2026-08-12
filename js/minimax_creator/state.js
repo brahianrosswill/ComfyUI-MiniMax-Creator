@@ -604,6 +604,19 @@ export function emptySegment() {
   return state;
 }
 
+/** A segment added behind another. A strip is usually one continuous piece, so
+ *  the seam opens live on both tracks with a medium blend of motion across the
+ *  cut — the settings a hard cut would make the user click on every card. The
+ *  first segment has no seam and stays `emptySegment`, and a loaded timeline
+ *  keeps exactly what it stored. */
+export function continuingSegment() {
+  const state = emptySegment();
+  state.continue = true;
+  state.continue_audio = true;
+  state.feather = FEATHER_GRID[2]; // Medium — 0.9 s of motion at 24 fps
+  return state;
+}
+
 export function emptyTimeline() {
   return {
     version: 2,

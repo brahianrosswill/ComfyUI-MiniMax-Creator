@@ -740,7 +740,7 @@ class Timeline {
 
   add() {
     if (this.timeline.segments.length >= S.MAX_SEGMENTS) return;
-    this.timeline.segments.push(S.emptySegment());
+    this.timeline.segments.push(S.continuingSegment());
     this.commit();
   }
 
