@@ -33,12 +33,16 @@ MAX_SEGMENTS = 24
 
 # How much of the previous segment's sound is handed to the next one.
 #
-# Not the whole thing, for two reasons that point the same way. A reference audio
-# block costs `40 * seconds * 2` rows in the packed sequence, which ride through
-# every sampling step. And an audio reference advances the layout's RoPE cursor
-# by its own length, pushing the target's time origin away from the keyframe cond
-# rows — which stay pinned at the text — so a long tail turns the inherited start
-# frame from "this is frame 0" into "this is from some seconds earlier".
+# Not the whole thing: a reference audio block costs `40 * seconds * 2` rows in
+# the packed sequence, and those rows ride through every sampling step.
+#
+# It used to cost more than that. An audio reference advances the layout's RoPE
+# cursor by its own length, and stock pins keyframe cond rows at the text — so a
+# long tail turned the inherited start frame from "this is frame 0" into "this is
+# from some seconds earlier", and the seam quietly stopped being a seam.
+# `encode.py` now keys every keyframe with its real pixel index and `payload.py`
+# places it on the target clip's own origin, so the tail's length no longer moves
+# the inherited frame. Only the sampling cost argues for a short one.
 #
 # A short tail is also all a seam needs: what carries across a cut is the room
 # tone, the key and the tempo, not the phrase.
@@ -683,12 +687,17 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         )
     audio_tail_s = audio_tail_seconds(data.get("audio_tail_s")) if continues_audio else 0.0
     # A feathered seam pins the tail end-aligned with the inherited frames on
-    # this segment's own timeline, so a tail longer than the pinned run would
-    # reach back past the clip's origin into coordinates nothing was trained
-    # on. Clamped to the overlap instead — the two are the tail of the same
-    # source and should cover the same instants.
+    # this segment's own timeline, and the two are the tail of the same source:
+    # they have to cover the same instants, not merely overlap. So the blend
+    # decides the tail outright rather than capping it. Longer would reach back
+    # past the clip's origin into coordinates nothing was trained on; shorter
+    # would pin frames across a span the sound says nothing about, and the
+    # sound is what the model follows hardest — the picture would carry the
+    # motion through while the soundtrack restarted inside the same instants.
+    # The piece's tail setting still governs every unblended sound seam; see
+    # `timeline.js`, which hides it once there are none left to govern.
     if feather > 1 and continues_audio:
-        audio_tail_s = min(audio_tail_s, feather / canvas.FPS)
+        audio_tail_s = feather / canvas.FPS
 
     checkpoint, pinned = _resolve_checkpoint(mode, data.get("checkpoint"))
     if mode == "REF2VA":

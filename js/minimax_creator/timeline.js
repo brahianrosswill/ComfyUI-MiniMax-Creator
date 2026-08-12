@@ -27,6 +27,12 @@ import {
 /** A seam blend's width as the user reads it: seconds, one decimal. */
 const blendSeconds = (frames) => (frames / FPS).toFixed(1);
 
+/** Whether a seam's sound tail is decided by its blend rather than by the
+ *  piece's setting. Mirrors `compile.compile_request`: a blended seam's sound
+ *  and frames are the tail of one source and cover the same instants, so the
+ *  blend sets the tail outright. */
+const blendSetsTail = (segment) => S.continuesAudio(segment) && S.feather(segment) > 1;
+
 
 /**
  * @param {object} options
@@ -396,14 +402,18 @@ class Timeline {
           : t("LoRAs") }),
         ...(idle ? [el("span", { class: "mmc-pill-sub", text: t("{idle} idle", { idle }) })] : []),
       ]),
-      // Only once a seam actually carries sound: until then it is a setting for
-      // a feature that is not in use — which includes all of one-pass mode,
-      // where there are no seams to carry anything.
-      ...(!single && this.timeline.segments.some(S.continuesAudio) ? [stepperPill({
+      // Only once a seam actually carries sound *and* is the kind this governs:
+      // a blended seam takes its tail from its blend, so a strip where every
+      // sound seam is blended has nothing left for this to set. Until then it
+      // is a control for a feature not in use — which includes all of one-pass
+      // mode, where there are no seams to carry anything.
+      ...(!single && this.timeline.segments.some(
+        (segment) => S.continuesAudio(segment) && !blendSetsTail(segment)) ? [stepperPill({
         value: Number(this.timeline.audio_tail_s), min: 0.1, max: S.MAX_AUDIO_TAIL_S,
         step: 0.1, width: "52px", iconName: "audio",
-        title: t("How much of the previous segment's sound a continuing seam inherits. "
-             + "Longer costs sampling time and pulls the inherited start frame off the clip's opening."),
+        title: t("How much of the previous segment's sound an unblended seam inherits. "
+             + "Longer costs sampling time. A blended seam takes its tail from its blend "
+             + "instead, so its sound and its picture cross on the same instants."),
         format: (n) => t("{n}s tail", { n: n.toFixed(1) }),
         onChange: (next) => { this.timeline.audio_tail_s = next; this.commit(); },
       })] : []),
@@ -581,7 +591,15 @@ class Timeline {
               { s: blendSeconds(S.feather(segment)), from, n: index + 1 })
           : t("This cut picks up from segment {from}'s last frame. Click to blend a moment "
             + "of its motion across instead — a smoother handoff, in exchange for segment "
-            + "{n} playing slightly shorter.", { from, n: index + 1 })),
+            + "{n} playing slightly shorter.", { from, n: index + 1 }))
+          // The sound rides the same inherited instants as the frames, so the
+          // blend sets the tail rather than the piece's setting. Said here
+          // because this chip is where the number that wins is on screen.
+          + (blendSetsTail(segment)
+            ? " " + t("Its sound carries the same {s} s, so the soundtrack and the "
+                    + "picture cross the seam on the same instants.",
+                      { s: blendSeconds(S.feather(segment)) })
+            : ""),
         onclick: (event) => this.pickFeather(event.currentTarget, segment, index),
       }, [el("span", {
         text: S.feather(segment) > 1
