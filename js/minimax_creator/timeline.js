@@ -312,30 +312,39 @@ class Timeline {
   }
 
   /**
-   * Chained or one pass — the same strip, read two ways.
+   * Chained or one pass — the two ends of the same dial.
    *
-   * A toggle rather than two nodes because the timeline *is* the same document
-   * in both: the same shots, the same durations, the same prompts. What changes
-   * is whether they are rendered one after another and joined, or compiled into
-   * one description with cut times in it and generated at once.
+   * Both are now the same statement made on every seam at once, which is why
+   * the control has a third position it never asks for: a strip with some of
+   * its seams merged is neither, and saying "chained" about it would be a lie
+   * told by the one control on the bar that changes what all the others mean.
+   * Mixed is reported, not offered — the seams themselves are where a pass is
+   * made, and there is no sensible thing for clicking it to do.
    */
   renderMode() {
     const single = S.isSingle(this.timeline);
-    const option = (mode, label, title) => el("button", {
-      class: `mmc-tl-render-opt${(mode === "single") === single ? " on" : ""}`,
+    const passes = S.passes(this.timeline);
+    const mixed = !single && passes.length < this.timeline.segments.length;
+    const option = (merge, label, title) => el("button", {
+      class: `mmc-tl-render-opt${!mixed && merge === single ? " on" : ""}`,
       text: t(label),
       title,
-      onclick: () => {
-        if (this.timeline.render === mode) return;
-        this.timeline.render = mode;
-        this.commit();
-      },
+      onclick: () => { if (mixed || merge !== single) this.mergeAll(merge); },
     });
     return el("div", { class: "mmc-tl-render" }, [
-      option("chained", "Chained",
+      option(false, "Chained",
         t("One generation per segment, joined end to end. No limit on the finished length, "
         + "and a segment can start from the previous one's last frame — but every join is a real seam.")),
-      option("single", "One pass",
+      ...(mixed ? [el("span", {
+        class: "mmc-tl-render-opt mmc-tl-render-mixed",
+        text: t("Mixed"),
+        title: t("Some of this strip's segments are merged into passes and some are "
+             + "generated alone — {passes} generations for {count} segments. Merge or "
+             + "split a seam to change it, or use the two ends of this control to make "
+             + "the whole strip one or the other.",
+             { passes: passes.length, count: this.timeline.segments.length }),
+      })] : []),
+      option(true, "One pass",
         t("One generation. The segments become the shots of a single description, cut times and all, "
         + "so nothing is decoded and re-encoded mid-clip and there is no seam to cross. "
         + "Everything a single pass can only have one of — mode, checkpoint, LoRAs, seed — "
@@ -357,9 +366,11 @@ class Timeline {
     const seconds = S.timelineSeconds(this.timeline);
     const frames = S.timelineFrames(this.timeline);
     const count = this.timeline.segments.length;
+    // What the queue costs and what a seam sits between: the generations, not
+    // the cards. They are the same number until a pass holds more than one.
+    const passes = S.passes(this.timeline);
     const active = S.activeGlobalLoras(this.timeline).length;
     const idle = (this.timeline.loras?.length ?? 0) - active;
-    const problem = single ? S.singleProblem(this.timeline) : null;
     const refined = this.timeline.segments.some((segment) => segment.refined?.body);
 
     this.barHost.replaceChildren(
@@ -407,8 +418,8 @@ class Timeline {
       // sound seam is blended has nothing left for this to set. Until then it
       // is a control for a feature not in use — which includes all of one-pass
       // mode, where there are no seams to carry anything.
-      ...(!single && this.timeline.segments.some(
-        (segment) => S.continuesAudio(segment) && !blendSetsTail(segment)) ? [stepperPill({
+      ...(passes.slice(1).map((pass) => pass.segments[0]).some(
+        (head) => S.continuesAudio(head) && !blendSetsTail(head)) ? [stepperPill({
         value: Number(this.timeline.audio_tail_s), min: 0.1, max: S.MAX_AUDIO_TAIL_S,
         step: 0.1, width: "52px", iconName: "audio",
         title: t("How much of the previous segment's sound an unblended seam inherits. "
@@ -423,7 +434,7 @@ class Timeline {
         class: "mmc-pill mmc-pill-static",
         title: t("What the merged request compiles to — every shot's references and "
              + "keyframes are one pool, so this is asked of the whole timeline at once."),
-      }, [el("span", { text: S.singleMode(this.timeline) })])] : []),
+      }, [el("span", { text: S.passMode(this.timeline.segments) })])] : []),
       // One call for the whole strip, not one per card: continuity across a cut
       // is only kept by a rewrite that wrote both sides of it.
       refineButton({
@@ -452,26 +463,22 @@ class Timeline {
               { count, frames })
           : t(count === 1 ? "{count} segment" : "{count} segments", { count }) }),
       ]),
-      // How many sampler passes this queue costs, which is not obvious either
-      // way: a strip of cards looks like several small edits, and in one pass it
-      // is the whole clip riding on a single denoise.
+      // How many sampler passes this queue costs, which is not obvious from the
+      // strip: a row of cards looks like several small edits, and a merged run
+      // of them is the whole stretch riding on a single denoise.
       el("div", {
         class: "mmc-note",
         title: single
           ? t("The whole timeline is generated at once, so the shots cost no more than one clip of the same length.")
-          : t("Each segment is generated separately and they run one after another."),
+          : passes.length === count
+            ? t("Each segment is generated separately and they run one after another.")
+            : t("One generation per pass, run one after another. A pass holding several "
+              + "shots costs no more than one clip of the same length."),
       }, [
         el("span", { class: "mmc-note-key", text: t("cost") }),
-        el("span", { text: single ? t("1 generation per queue")
-          : t(count === 1 ? "{count} generation per queue" : "{count} generations per queue", { count }) }),
+        el("span", { text: t(passes.length === 1 ? "{count} generation per queue"
+          : "{count} generations per queue", { count: passes.length }) }),
       ]),
-      // The refusals compile.py would raise, said here while the shots are still
-      // in front of you. Only in one pass: they are all about things a chained
-      // timeline is allowed to have and a single generation is not.
-      ...(problem ? [el("div", { class: "mmc-tl-problem" }, [
-        el("span", { class: "mmc-note-key", text: t("one pass") }),
-        el("span", { text: problem }),
-      ])] : []),
       // Whatever the last refine had to say — no text encoder is chosen, or it
       // wrote a label nothing backs. Shown on the bar rather than in a card,
       // because the call was about all of them.
@@ -479,14 +486,24 @@ class Timeline {
     );
   }
 
+  /**
+   * The strip: one enclosure per pass, seams between them.
+   *
+   * A pass is what one queue generates, so it is what the strip is built out of
+   * — usually one card, which is what the whole strip used to be. Every card
+   * sits in an enclosure whether or not it shares one, so the cards line up
+   * whatever the run lengths are; the enclosure only draws itself when it holds
+   * more than one, and the head rails only take up room once the strip has a
+   * pass in it at all.
+   */
   renderStrip() {
     const parts = [];
-    const single = S.isSingle(this.timeline);
-    this.timeline.segments.forEach((segment, index) => {
-      if (index > 0) parts.push(single ? this.renderCut(index) : this.renderJoin(index));
-      parts.push(this.renderCard(segment, index));
+    const passes = S.passes(this.timeline);
+    passes.forEach((pass, position) => {
+      if (position > 0) parts.push(this.renderJoin(pass.start));
+      parts.push(this.renderPass(pass));
     });
-    const what = single ? "Shot" : "Segment";
+    const what = S.isSingle(this.timeline) ? "Shot" : "Segment";
     parts.push(el("button", {
       class: "mmc-tl-add",
       title: this.timeline.segments.length >= S.MAX_SEGMENTS
@@ -495,7 +512,70 @@ class Timeline {
       disabled: this.timeline.segments.length >= S.MAX_SEGMENTS || undefined,
       onclick: () => this.add(),
     }, [el("span", { text: "+" }), el("span", { text: t(what) })]));
+    this.stripHost.classList.toggle(
+      "has-pass", passes.some((pass) => pass.segments.length > 1));
     this.stripHost.replaceChildren(...parts);
+  }
+
+  /**
+   * One pass: its cards, and — once there are several — the casing that says
+   * they are one generation.
+   *
+   * The casing is the whole visual idea. Inside it the cards lose their own
+   * borders and become panels of one strip of film, and the gaps between them
+   * become the cut times the description will carry. What the rail says is
+   * everything the pass can only have one of, which is exactly what merging
+   * cost: one mode, one length, one generation.
+   */
+  renderPass(pass) {
+    const cards = [];
+    pass.segments.forEach((segment, offset) => {
+      if (offset > 0) cards.push(this.renderCut(pass, offset));
+      cards.push(this.renderCard(segment, pass.start + offset, pass));
+    });
+    if (pass.segments.length === 1) {
+      return el("div", { class: "mmc-tl-pass" }, [
+        el("div", { class: "mmc-tl-pass-head" }),
+        el("div", { class: "mmc-tl-pass-cards" }, cards),
+      ]);
+    }
+
+    const count = pass.segments.length;
+    const frames = framesForSeconds(S.cutTimes(pass.segments).total);
+    const seconds = secondsForFrames(frames);
+    const problem = S.passProblem(this.timeline, pass);
+
+    return el("div", { class: "mmc-tl-pass on" }, [
+      el("div", { class: "mmc-tl-pass-head" }, [
+        el("span", { class: "mmc-tl-pass-name" }, [
+          icon("timeline", 13), el("span", { text: t("one pass") }),
+        ]),
+        el("span", {
+          class: `mmc-tl-pass-len${isTrainedLength(frames) ? "" : " off-distribution"}`,
+          text: t("{count} shots · {s} s", { count, s: seconds.toFixed(1) }),
+          title: isTrainedLength(frames)
+            ? t("{frames} frames at 24 fps, generated in one go.", { frames })
+            : t("{frames} frames in one generation — outside the ~5-15 s the weights "
+              + "were trained on. Split the pass to bring each side back inside it.",
+                { frames }),
+        }),
+        el("span", { class: "mmc-tl-mode", text: S.passMode(pass.segments) }),
+        el("button", {
+          class: "mmc-ghost mmc-tl-pass-split",
+          text: t("Split"),
+          title: t("Generate these {count} shots separately again. Every cut between "
+               + "them becomes a seam you can set, and each shot gets its own mode, "
+               + "checkpoint and length back — nothing written is lost either way.",
+                 { count }),
+          onclick: () => this.splitPass(pass),
+        }),
+      ]),
+      el("div", { class: "mmc-tl-pass-cards" }, cards),
+      ...(problem ? [el("div", { class: "mmc-tl-problem" }, [
+        el("span", { class: "mmc-note-key", text: t("one pass") }),
+        el("span", { text: problem }),
+      ])] : []),
+    ]);
   }
 
   /**
@@ -506,24 +586,30 @@ class Timeline {
    * switch is refused rather than silently dropping them.
    */
   /**
-   * The same place in the strip, in one-pass mode: a cut, and when it happens.
+   * The join inside a pass: a cut, and when it happens.
    *
-   * Nothing to switch. A cut inside one generation is a line of the description
-   * — `[Shot 3] At 00:09.000, ...` — so what there is to show is the timestamp
-   * the compiler will write, which is the one number the shot durations decide
-   * that is not visible anywhere else.
+   * No seam to switch, because there is no seam — a cut inside one generation
+   * is a line of the description, `[Shot 3] At 00:09.000, ...`, and the model
+   * draws it. So what there is to show is the timestamp the compiler will
+   * write, which is the one number the shot durations decide that is not
+   * visible anywhere else. Timed from the pass rather than from the timeline,
+   * because that is what the description says: every pass opens at 00:00.
+   *
+   * Clicking splits the pass here, which is the way back out.
    */
-  renderCut(index) {
-    const { at } = S.cutTimes(this.timeline);
-    return el("div", { class: "mmc-tl-seam" }, [
-      el("div", {
-        class: "mmc-tl-cut",
-        title: t("Shot {n} cuts in {time} into the clip. "
-             + 'Write its prompt as the cut — "the camera cuts to…", "the shot transitions to…" — '
-             + "and the timestamp is added for you.",
-             { n: index + 1, time: S.shotTime(at[index]) }),
-      }, [el("span", { text: "✂" }), el("span", { text: S.shotTime(at[index]) })]),
-    ]);
+  renderCut(pass, offset) {
+    const { at } = S.cutTimes(pass.segments);
+    const time = S.shotTime(at[offset]);
+    const n = pass.start + offset + 1;
+    return el("button", {
+      class: "mmc-tl-cut",
+      title: t("Shot {n} cuts in {time} into this pass. "
+           + 'Write its prompt as the cut — "the camera cuts to…", "the shot transitions to…" — '
+           + "and the timestamp is added for you. Click to split the pass here, so the two "
+           + "sides are generated separately and this cut becomes a seam.",
+           { n, time }),
+      onclick: () => this.splitAt(pass.start + offset),
+    }, [el("span", { text: "✂" }), el("span", { text: time })]);
   }
 
   renderJoin(index) {
@@ -537,7 +623,12 @@ class Timeline {
     // Which earlier segment a live seam inherits from — the previous one unless
     // the seam names another, which is what makes a circular narrative possible:
     // segment 3 can return to segment 1's hallway after an unrelated segment 2.
-    const from = S.continueSource(segment, index);
+    // Resolved through the passes, because the frames that exist to inherit are
+    // a generation's: a source merged into the middle of a pass means the pass,
+    // which is what compile.py reaches for and so what this has to say.
+    const stored = S.continueSource(segment, index);
+    const from = this.earlierPasses(index)
+      .find((pass) => stored > pass.start && stored <= pass.end)?.end ?? stored;
 
     // Two switches, not one control with three states. The picture and the sound
     // cross a seam independently: a hard cut whose score keeps playing is as
@@ -565,9 +656,9 @@ class Timeline {
         onclick: soundBlocked ? undefined : () => { segment.continue_audio = !sound; this.commit(); },
       }, [icon("audio", 13), el("span", { text: sound ? t("sound") : t("silent seam") })]),
       // Where the seam inherits from. Only on a live seam, and only once there
-      // is a choice to make: seam 2 can only continue from segment 1, and a
-      // one-option picker would only raise the question it answers.
-      ...((on || sound) && index >= 2 ? [el("button", {
+      // is a choice to make: the second pass can only continue from the first,
+      // and a one-option picker would only raise the question it answers.
+      ...((on || sound) && this.earlierPasses(index).length >= 2 ? [el("button", {
         class: `mmc-tl-join mmc-tl-join-from${from !== index ? " on" : ""}`,
         title: t("What continues across this seam is segment {from}'s last {what}. "
              + "Click to inherit from a different earlier segment — a story returning to "
@@ -605,7 +696,53 @@ class Timeline {
         text: S.feather(segment) > 1
           ? t("blend {s} s", { s: blendSeconds(S.feather(segment)) }) : t("no blend"),
       })])] : []),
+      // The third answer to what happens here, and the only structural one: no
+      // seam at all, because the two sides are one generation. Kept apart from
+      // the two switches above rather than folded in as a third state of the
+      // picture one — those say how this seam behaves, this one says whether
+      // there is a seam to behave.
+      el("button", {
+        class: "mmc-tl-join mmc-tl-join-merge",
+        title: t("Generate segment {n} in the same pass as the one before it: one "
+             + "generation, with this cut written into its description for the model to "
+             + "draw. Nothing is decoded and re-encoded here, so there is no seam to "
+             + "cross — in exchange the two shots share one mode, one checkpoint, one "
+             + "LoRA stack and one seed. Everything you set here is kept, and comes "
+             + "back if you split the pass again.", { n: index + 1 }),
+        onclick: () => this.mergeAt(index),
+      }, [el("span", { text: "▤" }), el("span", { text: t("one pass") })]),
     ]);
+  }
+
+  /** Fold the segment at `index` into the pass in front of it. */
+  mergeAt(index) {
+    if (index < 1) return;
+    this.timeline.segments[index].merge = true;
+    this.commit();
+  }
+
+  /** ...and back out again: the segment at `index` opens its own pass. */
+  splitAt(index) {
+    delete this.timeline.segments[index].merge;
+    this.commit();
+  }
+
+  /** Every shot of a pass back to a generation of its own. */
+  splitPass(pass) {
+    for (let index = pass.start + 1; index < pass.end; index += 1) {
+      delete this.timeline.segments[index].merge;
+    }
+    this.commit();
+  }
+
+  /** The bar's two ends: the whole strip as one pass, or none of it. */
+  mergeAll(merge) {
+    this.timeline.segments.forEach((segment, index) => {
+      if (!index) return;
+      if (merge) segment.merge = true;
+      else delete segment.merge;
+    });
+    this.commit();
   }
 
   /** The seam's width. The options are the runs the video VAE can encode
@@ -629,33 +766,62 @@ class Timeline {
     });
   }
 
-  /** The seam's source, chosen from every segment before this one. */
+  /** The passes that finish before the segment at `index` starts — the ones
+   *  whose frames exist by the time this seam is crossed. */
+  earlierPasses(index) {
+    return S.passes(this.timeline).filter((pass) => pass.end <= index);
+  }
+
+  /**
+   * The seam's source, chosen from the passes before this one.
+   *
+   * Passes rather than segments, because a pass is one generation and what it
+   * leaves behind is one clip: a shot merged into the middle of one has no last
+   * frame of its own to inherit. Stored as the number of the pass's last
+   * segment, which is the frame it means and the card the user can point at.
+   */
   pickContinueFrom(anchor, segment, index) {
-    const options = [];
-    for (let n = 1; n <= index; n += 1) {
-      options.push(n === index ? t("segment {n} — previous", { n }) : t("segment {n}", { n }));
-    }
+    const earlier = this.earlierPasses(index);
+    const options = earlier.map((pass, position) => {
+      const previous = position === earlier.length - 1;
+      if (pass.segments.length > 1) {
+        return previous
+          ? t("segments {first}-{last}, one pass — previous",
+              { first: pass.start + 1, last: pass.end })
+          : t("segments {first}-{last}, one pass", { first: pass.start + 1, last: pass.end });
+      }
+      return previous ? t("segment {n} — previous", { n: pass.end }) : t("segment {n}", { n: pass.end });
+    });
+    // Whatever is stored resolves to the pass that holds it, which is the frame
+    // compile.py will actually reach for.
+    const source = S.continueSource(segment, index);
+    const current = earlier.findIndex((pass) => source > pass.start && source <= pass.end);
+
     openChoicePopover(anchor, {
       title: t("Segment {n} continues from", { n: index + 1 }),
       options,
-      value: options[S.continueSource(segment, index) - 1],
+      value: options[current >= 0 ? current : earlier.length - 1],
       onPick: (choice) => {
-        const n = Number(/\d+/.exec(choice)[0]);
-        // The previous segment is the default, so choosing it is choosing to
-        // store nothing — an absent key survives reordering with no bookkeeping.
-        if (n === index) delete segment.continue_from;
-        else segment.continue_from = n;
+        const picked = earlier[options.indexOf(choice)];
+        if (!picked) return;
+        // The previous pass is the default, so choosing it is choosing to store
+        // nothing — an absent key survives reordering with no bookkeeping.
+        if (picked === earlier[earlier.length - 1]) delete segment.continue_from;
+        else segment.continue_from = picked.end;
         this.commit();
       },
     });
   }
 
-  renderCard(segment, index) {
-    const single = S.isSingle(this.timeline);
-    // In one pass the shot does not snap to the grid on its own — the total
-    // does — so the card shows what the user set and the bar shows the truth.
+  renderCard(segment, index, pass) {
+    // Whether this card is a generation or a shot inside one. Everything below
+    // that used to ask the timeline's render mode is really asking this.
+    const shared = pass.segments.length > 1;
+    // In a pass the shot does not snap to the grid on its own — the pass's
+    // total does — so the card shows what the user set and the rail above it
+    // shows the truth.
     const frames = framesForSeconds(segment.duration_s);
-    const seconds = single ? Number(segment.duration_s) || 0 : secondsForFrames(frames);
+    const seconds = shared ? Number(segment.duration_s) || 0 : secondsForFrames(frames);
     // The segment's own references plus the piece references its text cites —
     // both ride into this generation, so the card counts both.
     const refs = S.references(segment).length + S.citedPool(segment).length;
@@ -685,21 +851,21 @@ class Timeline {
       el("div", { class: "mmc-tl-card-head" }, [
         el("span", { class: "mmc-tl-index", text: String(index + 1) }),
         // The off-distribution mark belongs to whatever is actually generated in
-        // one go. Chained, that is this card; in one pass it is the whole
-        // timeline, and marking every card would say it about the wrong thing.
+        // one go. Alone, that is this card; in a pass it is the pass, and
+        // marking every card would say it about the wrong thing — the rail
+        // carries it there instead.
         el("span", {
-          class: `mmc-tl-dur${single || isTrainedLength(frames) ? "" : " off-distribution"}`,
+          class: `mmc-tl-dur${shared || isTrainedLength(frames) ? "" : " off-distribution"}`,
           text: `${segment.duration_s} s`,
-          title: single
-            ? t("{s} s of the one generation — the frame count is the timeline's.",
-                { s: segment.duration_s })
+          title: shared
+            ? t("{s} s of this pass — the frame count is the pass's.", { s: segment.duration_s })
             : isTrainedLength(frames)
               ? t("{frames} frames at 24 fps", { frames })
               : t("{frames} frames — outside the ~5–15 s the weights were trained on.", { frames }),
         }),
-        // The mode is a property of the generation, and in one pass there is one
-        // of those for the whole timeline — so it moves to the bar.
-        ...(single ? [] : [el("span", { class: "mmc-tl-mode", text: S.mode(segment) })]),
+        // The mode is a property of the generation, and a pass holding several
+        // shots has one of those for all of them — so it moves to the rail.
+        ...(shared ? [] : [el("span", { class: "mmc-tl-mode", text: S.mode(segment) })]),
       ]),
       // Dimmed while a rewrite stands in for it, the same way the editor dims the
       // box this caption is showing: the card would otherwise read as if the
@@ -938,10 +1104,10 @@ class Timeline {
       // ran on different checkpoints per the same setting would not be one
       // setting. Read here, set from the node body's weights control.
       routeOf: () => this.timeline.models?.route ?? "auto",
-      // No seam in one pass, so nothing to switch: the shots are cuts inside a
-      // single generation and continuity is the model's to keep, not a wiring
-      // decision.
-      continuePill: index > 0 && !S.isSingle(this.timeline),
+      // Only where there is a seam to switch. A shot inside a pass has none —
+      // it is a cut inside one generation, and continuity there is the model's
+      // to keep rather than a wiring decision — and neither has shot 1.
+      continuePill: index > 0 && S.passOf(this.timeline, index).start === index,
       // One card, refined against the whole timeline: the server compiles the
       // strip to build this segment's payload, so the rewrite is written knowing
       // the global prompt, the canvas and whether this shot continues the last.
@@ -963,11 +1129,14 @@ class Timeline {
       onReverted: () => { this.dropTimelineRewrite(); this.onCommit?.(); },
     });
 
-    const single = S.isSingle(this.timeline);
+    // A card sharing a pass is a shot of it; a card generated alone is a
+    // segment. The two words mean different things in this node and the header
+    // is where the user finds out which one they are editing.
+    const shared = S.passOf(this.timeline, index).segments.length > 1;
     const modal = el("div", { class: "mmc-modal mmc-tl-editor" }, [
       el("div", { class: "mmc-modal-head" }, [
         el("span", { class: "mmc-tab", "aria-selected": "true",
-                     text: t(single ? "Shot {n}" : "Segment {n}", { n: index + 1 }) }),
+                     text: t(shared ? "Shot {n}" : "Segment {n}", { n: index + 1 }) }),
         el("span", { class: "mmc-tl-editor-sub",
                      text: t("of {count}", { count: this.timeline.segments.length }) }),
         el("button", { class: "mmc-close", text: "✕", title: t("Back to the timeline"), onclick: () => done() }),
@@ -1019,12 +1188,13 @@ export class TimelineBody {
     this.root = el("div", { class: "mmc-root" });
     this.stage = new Stage({
       nodeId,
-      // Which segment the queue is on, said over the preview: the strip runs
+      // Which generation the queue is on, said over the preview: the strip runs
       // for minutes and a bare step count says nothing about where in the
-      // piece the sampler is. Read late — the strip may grow between queueing
-      // and the announce.
-      segmentLabel: (index) => t("Segment {n} of {count}",
-        { n: index, count: this.timeline.segments.length }),
+      // piece the sampler is. Counted in passes, because that is what the
+      // announcing node is one of. Read late — the strip may grow between
+      // queueing and the announce.
+      segmentLabel: (index) => t("Pass {n} of {count}",
+        { n: index, count: S.passes(this.timeline).length }),
       // View-only: a timeline's references live on its segments, so a pick from
       // here would have no card to land on. The Creator attaches; this browses.
       onGallery: () => openPicker({
@@ -1110,6 +1280,7 @@ export class TimelineBody {
   renderPanel() {
     const segments = this.timeline.segments;
     const single = S.isSingle(this.timeline);
+    const passes = S.passes(this.timeline);
     const seconds = S.timelineSeconds(this.timeline);
     const [width, height] = resolveCanvas(
       ASPECT_PRESETS.find(([label]) => label === this.timeline.aspect)?.[1] ?? 16 / 9,
@@ -1130,31 +1301,44 @@ export class TimelineBody {
         onclick: () => this.open(),
       }),
       // The one picture of the timeline the node has room for: blocks at their
-      // real relative lengths, so a 10-second shot is visibly twice a 5.
-      el("div", { class: "mmc-tl-lane", onclick: () => this.open() }, segments.map((segment, index) => {
-        // In one pass there is no seam to continue across — the lane is the shot
-        // list of one generation, so every block reads the same way.
-        const continues = !single && S.continues(segment);
-        const { at } = S.cutTimes(this.timeline);
+      // real relative lengths, so a 10-second shot is visibly twice a 5. Merged
+      // shots close ranks under one outline — the same reading as the modal's
+      // casing, at a tenth the size.
+      el("div", { class: "mmc-tl-lane", onclick: () => this.open() }, passes.map((pass) => {
+        const { at, total } = S.cutTimes(pass.segments);
+        const shared = pass.segments.length > 1;
         return el("div", {
-          class: `mmc-tl-tick${continues ? " on" : ""}`,
-          style: { flexGrow: String(Math.max(1, segment.duration_s)) },
-          title: single
-            ? (index
-                ? t("Shot {n} · {s} s · cuts in at {time}",
-                    { n: index + 1, s: segment.duration_s, time: S.shotTime(at[index]) })
-                : t("Shot {n} · {s} s · opens the clip", { n: index + 1, s: segment.duration_s }))
-            : (continues
-                ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
-                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
-                      from: S.continueSource(segment, index) })
-                : t("Segment {n} · {s} s · {mode} · hard cut",
-                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
-        }, [
-          ...(continues ? [icon("link", 13)] : []),
-          el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
-          el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
-        ]);
+          // The run takes the width its shots add up to, and they divide it
+          // between themselves — so the lane stays proportional whatever is
+          // merged into what.
+          class: `mmc-tl-run${shared ? " on" : ""}`,
+          style: { flexGrow: String(Math.max(1, total)) },
+        }, pass.segments.map((segment, offset) => {
+          const index = pass.start + offset;
+          // A seam only exists in front of a pass. Inside one the cut is a line
+          // of the description, so the block reads as a shot rather than a join.
+          const continues = !offset && index > 0 && S.continues(segment);
+          return el("div", {
+            class: `mmc-tl-tick${continues ? " on" : ""}`,
+            style: { flexGrow: String(Math.max(1, segment.duration_s)) },
+            title: shared
+              ? (offset
+                  ? t("Shot {n} · {s} s · cuts in at {time} of this pass",
+                      { n: index + 1, s: segment.duration_s, time: S.shotTime(at[offset]) })
+                  : t("Shot {n} · {s} s · opens a pass of {count}",
+                      { n: index + 1, s: segment.duration_s, count: pass.segments.length }))
+              : (continues
+                  ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
+                      { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
+                        from: S.continueSource(segment, index) })
+                  : t("Segment {n} · {s} s · {mode} · hard cut",
+                      { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
+          }, [
+            ...(continues ? [icon("link", 13)] : []),
+            el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
+            el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
+          ]);
+        }));
       })),
       el("div", { class: "mmc-pills" }, [
         // The render mode leads, because it is the one thing about this node
@@ -1163,10 +1347,15 @@ export class TimelineBody {
           class: "mmc-pill mmc-pill-static",
           title: single
             ? t("One generation: the segments are the shots of a single description, cut times and all.")
-            : t("One generation per segment, joined end to end."),
+            : passes.length === segments.length
+              ? t("One generation per segment, joined end to end.")
+              : t("One generation per pass, joined end to end. A pass holding several "
+                + "shots generates them at once, with the cuts written into its description."),
         }, [
           icon("timeline", 16),
-          el("span", { text: single ? t("one pass") : t("chained") }),
+          el("span", { text: single ? t("one pass")
+            : passes.length === segments.length ? t("chained")
+              : t("{count} passes", { count: passes.length }) }),
           el("span", {
             class: "mmc-pill-sub",
             text: single
@@ -1286,9 +1475,10 @@ export class TimelineBody {
       widgets: this.widgets,
       value: (name, fallback) => this.value(name, fallback),
       set: (name, value) => this.set(name, value),
-      // Chained is many generations; one pass is one, and the seed and step
-      // counts mean different things in each.
-      perSegment: !S.isSingle(this.timeline),
+      // Several generations mean the seed and the step count are asked of each
+      // of them; one generation means they are asked once. The passes are the
+      // generations, whatever the cards look like.
+      perSegment: S.passes(this.timeline).length > 1,
       // The turbo switch, on the timeline's global stack: a speed-up belongs to
       // the run, which is the whole reason the global stack exists.
       turbo: Turbo.turboPills({

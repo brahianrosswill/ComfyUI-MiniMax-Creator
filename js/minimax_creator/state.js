@@ -578,9 +578,42 @@ export const MAX_SEGMENTS = 24;
 
 /** Mirrors compile.RENDER_MODES. "chained" is a generation per segment,
  *  concatenated; "single" is one generation whose description holds every
- *  segment as a `[Shot n]` with its own cut time. */
+ *  segment as a `[Shot n]` with its own cut time.
+ *
+ *  Both are now readings of the same thing — see `passes` — and `render` is
+ *  derived from the merge flags rather than set. It is still written, and still
+ *  what every "is the whole strip one generation" question asks. */
 export const RENDER_MODES = ["chained", "single"];
 export const isSingle = (timeline) => timeline.render === "single";
+
+/** Whether a segment is generated in the same pass as the one before it.
+ *  Meaningless on the first — there is nothing in front of it to merge into —
+ *  which `syncTimeline` keeps true by clearing it there. */
+export const merged = (segment) => segment.merge === true;
+
+/**
+ * The strip as passes: `[{ start, end, segments }]`, in play order.
+ *
+ * Mirrors `compile.timeline_runs`. A pass is one generation, so a pass is what
+ * a seam sits between, what a checkpoint and a LoRA stack belong to, and what
+ * the cost line counts. Most passes are one segment long, which is what chained
+ * always was; a strip merged end to end is one pass, which is what one pass
+ * always was. The middle — a run of shots the model cuts between, chained to
+ * the rest — is what neither could say.
+ */
+export function passes(timeline) {
+  const runs = [];
+  timeline.segments.forEach((segment, index) => {
+    if (index && merged(segment)) runs[runs.length - 1].end = index + 1;
+    else runs.push({ start: index, end: index + 1 });
+  });
+  return runs.map((run) => ({ ...run, segments: timeline.segments.slice(run.start, run.end) }));
+}
+
+/** The pass a segment is generated in. */
+export function passOf(timeline, index) {
+  return passes(timeline).find((pass) => index >= pass.start && index < pass.end);
+}
 
 /** Mirrors compile.DEFAULT_AUDIO_TAIL_S / MAX_AUDIO_TAIL_S. Short on purpose:
  *  the reference rows ride through every sampling step, and a long tail pushes
@@ -693,10 +726,23 @@ function syncCanvas(timeline) {
     };
   }
   // Segment 1 has nothing in front of it. Kept in step here rather than guarded
-  // at every read, so reordering cannot leave a stale flag behind.
+  // at every read, so reordering cannot leave a stale flag behind. `merge` goes
+  // with the seam flags because it is one of them — the statement that there is
+  // no seam here at all — and a segment moved to the front has nothing left to
+  // be merged into.
   if (timeline.segments.length) {
     timeline.segments[0].continue = false;
     timeline.segments[0].continue_audio = false;
+    delete timeline.segments[0].merge;
+  }
+  // `render` is derived, not set: it is the name for a strip that turned out to
+  // be one pass end to end, which is a fact about the merge flags. Everything
+  // that asks `isSingle` is asking exactly that. A lone segment keeps whatever
+  // it was told — with no seam in the strip there is nothing to derive from,
+  // and the answer only decides whether the card is called a shot.
+  if (timeline.segments.length > 1) {
+    timeline.render = timeline.segments.every((segment, index) => !index || merged(segment))
+      ? "single" : "chained";
   }
   // A seam may name any earlier segment as its source; anything else — the
   // previous one included, which is what absence already means — is dropped.
@@ -758,6 +804,12 @@ export function parseTimeline(raw) {
         delete segment.turbo;
         segment.continue = raw?.continue === true;
         segment.continue_audio = raw?.continue_audio === true;
+        // Which pass this segment is generated in. A timeline saved as one pass
+        // before the flags existed is every segment merged into the first,
+        // which is the same timeline said the new way — and is what stops
+        // `passes` from having to know about `render` at all.
+        delete segment.merge;
+        if (raw?.merge === true || timeline.render === "single") segment.merge = true;
         // The seam's source, as the 1-based number on the card it names.
         // `syncCanvas` prunes anything that does not point at an earlier
         // segment, so only the type is checked here.
@@ -807,6 +859,11 @@ export function serializeTimeline(timeline) {
     ...serializeTurbo(timeline.turbo),
     segments: timeline.segments.map((segment, index) => {
       const out = serializeCommon(segment);
+      // Which pass this segment belongs to, said as "the same one as the
+      // segment before me" — so a pass survives inserting, moving and deleting
+      // with no numbers to keep in step. Never on the first segment, which is
+      // always a pass of its own.
+      if (index > 0 && merged(segment)) out.merge = true;
       // Absent means a hard cut, which is the default, so only continuations
       // add anything. Never on the first segment: there is nothing to continue.
       if (index > 0 && segment.continue) out.continue = true;
@@ -832,16 +889,19 @@ export function cloneSegment(segment) {
 }
 
 /**
- * Where each shot cuts in, and what the pills add up to before snapping.
+ * Where each shot of one pass cuts in, and what its shots add up to before
+ * snapping.
  *
- * Off the raw durations rather than the snapped ones, mirroring
- * `compile.single_payload`: a one-pass render has one frame count and it is the
+ * Takes the pass's own segments, because a cut time is written against the
+ * generation it happens inside: shot 1 of every pass opens at 00:00, whatever
+ * has played before it. Off the raw durations rather than the snapped ones,
+ * mirroring `compile.group_payload` — a pass has one frame count and it is the
  * total, so there is no per-shot grid for a cut time to land on.
  */
-export function cutTimes(timeline) {
+export function cutTimes(segments) {
   const at = [];
   let total = 0;
-  for (const segment of timeline.segments) {
+  for (const segment of segments) {
     at.push(total);
     total += Number(segment.duration_s) || 0;
   }
@@ -858,18 +918,19 @@ export function shotTime(seconds) {
 /**
  * The frames the finished clip holds.
  *
- * Chained, every segment snaps to the 17n+5 grid on its own and the results are
- * concatenated. In one pass there is a single generation, so the durations are
- * summed and snapped once — which is not the same number, and is the one the
- * sampler will actually be asked for.
+ * One pass is one generation, so its shots are summed and snapped to the 17n+5
+ * grid once — which is not the same number as snapping each of them. The passes
+ * are then concatenated, which is what a strip of unmerged segments always was:
+ * every one its own pass, every one snapped alone.
  */
 export function timelineFrames(timeline) {
-  if (isSingle(timeline)) return framesForSeconds(cutTimes(timeline).total);
-  // A feathered seam re-generates its inherited run at the segment's head and
-  // trims it off after decode, so those frames are sampled but never delivered.
-  return timeline.segments.reduce((total, segment, index) => {
-    const overlap = index > 0 && continues(segment) && feather(segment) > 1 ? feather(segment) : 0;
-    return total + framesForSeconds(segment.duration_s) - overlap;
+  return passes(timeline).reduce((total, pass, index) => {
+    const head = pass.segments[0];
+    // A feathered seam re-generates its inherited run at the pass's head and
+    // trims it off after decode, so those frames are sampled but never
+    // delivered. Only between passes: a seam inside one does not exist.
+    const overlap = index > 0 && continues(head) && feather(head) > 1 ? feather(head) : 0;
+    return total + framesForSeconds(cutTimes(pass.segments).total) - overlap;
   }, 0);
 }
 
@@ -1357,29 +1418,36 @@ export function promptTriggers(state) {
  * checkpoint, which is what the manager is handed instead of `checkpoint()`.
  */
 export function timelineCheckpoints(timeline) {
-  // One pass, one set of weights: the shots are merged into a single request, so
-  // a reference anywhere makes the whole thing Ref2VA.
-  if (isSingle(timeline)) {
-    if (timeline.segments.some(hasReferences)) return ["ref2va"];
-    const pin = timeline.segments.map((s) => s.checkpoint).find((c) => c && c !== "auto");
-    return [pin || "fl2va"];
-  }
-  const routed = new Set(timeline.segments.map((segment) => checkpoint(segment)));
+  const routed = new Set(passes(timeline).map((pass) => passCheckpoint(pass.segments)));
   return CHECKPOINTS.filter((name) => routed.has(name));
 }
 
+/** The one checkpoint a pass runs on. Its shots are merged into a single
+ *  request, so a reference in any of them makes the whole pass Ref2VA. */
+export function passCheckpoint(segments) {
+  if (segments.length === 1) return checkpoint(segments[0]);
+  if (segments.some(hasReferences)) return "ref2va";
+  const pin = segments.map((s) => s.checkpoint).find((c) => c && c !== "auto");
+  return pin || "fl2va";
+}
+
 /**
- * The mode the merged one-pass request will compile to.
+ * The mode a pass's merged request will compile to.
  *
- * `mode()` answers it for one segment; here the shots are one generation, so the
- * question is asked of all of them at once — a reference anywhere makes it
- * REF2VA, and the keyframes are the first shot's start and the last shot's end.
+ * `mode()` answers it for one segment, and a pass of one is exactly that. Past
+ * one the shots are a single generation, so the question is asked of all of
+ * them at once — a reference anywhere makes it REF2VA, and the keyframes are
+ * the first shot's start and the last shot's end.
  */
-export function singleMode(timeline) {
-  const shots = timeline.segments;
-  if (shots.some(hasReferences)) return "REF2VA";
-  const first = frameAsset(shots[0] ?? { assets: [] }, "first_frame");
-  const last = frameAsset(shots[shots.length - 1] ?? { assets: [] }, "last_frame");
+export function passMode(segments) {
+  if (segments.length === 1) return mode(segments[0]);
+  if (segments.some(hasReferences)) return "REF2VA";
+  const head = segments[0] ?? { assets: [] };
+  const first = frameAsset(head, "first_frame");
+  const last = frameAsset(segments[segments.length - 1] ?? { assets: [] }, "last_frame");
+  // The pass's own start frame is the seam's, when it has one — the same rule a
+  // lone continuing segment follows, asked of the shot the seam lands on.
+  if (continues(head)) return last ? "FL2VA" : "I2VA";
   if (first && last) return "FL2VA";
   if (first) return "I2VA";
   if (last) return "L2VA";
@@ -1387,33 +1455,42 @@ export function singleMode(timeline) {
 }
 
 /**
- * Why this timeline could not be rendered in one pass, or null.
+ * Why this pass could not be generated as one, or null.
  *
- * Mirrors `compile.single_payload`'s refusals so a timeline switched over to one
- * pass says what is wrong with it while the shots are still in front of you,
- * rather than at queue time. compile.py stays authoritative — this only has to
- * catch the structural ones, which are the ones a chained timeline routinely has.
+ * Mirrors `compile.group_payload`'s refusals so a run merged into one pass says
+ * what is wrong with it while the shots are still in front of you, rather than
+ * at queue time. compile.py stays authoritative — this only has to catch the
+ * structural ones, which are the ones a strip of separate segments routinely
+ * has, because separate segments are allowed all of them.
+ *
+ * Nothing to say about a pass of one: everything below is about shots sharing a
+ * generation, and a lone segment shares its with nobody.
  */
-export function singleProblem(timeline) {
-  const shots = timeline.segments;
+export function passProblem(timeline, pass) {
+  const shots = pass.segments;
+  if (shots.length < 2) return null;
   const globalPrompt = (timeline.prompt || "").trim();
+  const number = (index) => pass.start + index + 1;
 
   for (const [index, shot] of shots.entries()) {
     // A refined shot has prose whatever its prompt box holds — the rewrite
     // replaces it at compile time — so an empty box is only empty if nothing
     // was written for it at all.
     const text = (refinedBody(shot) || shot.prompt || "").trim();
+    // The global prompt opens the first shot of every pass, so it is that
+    // shot's text when the box under it is empty.
     if (!text && !(index === 0 && globalPrompt)) {
-      return t("Shot {shot} has no prompt. In one pass the shots are one description "
+      return t("Shot {shot} has no prompt. The shots of a pass are one description "
              + "with cuts in it, so an empty one leaves a cut with nothing on the far side.",
-             { shot: index + 1 });
+             { shot: number(index) });
     }
     if (frameAsset(shot, "first_frame") && index !== 0) {
-      return t("Shot {shot} has a start frame, but one pass opens on shot 1.", { shot: index + 1 });
+      return t("Shot {shot} has a start frame, but this pass opens on shot {first}.",
+               { shot: number(index), first: number(0) });
     }
     if (frameAsset(shot, "last_frame") && index !== shots.length - 1) {
-      return t("Shot {shot} has an end frame, but one pass ends on shot {last}.",
-               { shot: index + 1, last: shots.length });
+      return t("Shot {shot} has an end frame, but this pass ends on shot {last}.",
+               { shot: number(index), last: number(shots.length - 1) });
     }
   }
 
@@ -1421,8 +1498,8 @@ export function singleProblem(timeline) {
   const withFrames = shots.findIndex((s) => frameAsset(s, "first_frame") || frameAsset(s, "last_frame"));
   if (withRefs >= 0 && withFrames >= 0) {
     return t("Shot {frames} has a start/end frame and shot {refs} has references. "
-           + "Those are different checkpoints and one pass runs on one of them.",
-           { frames: withFrames + 1, refs: withRefs + 1 });
+           + "Those are different checkpoints and one generation runs on one of them.",
+           { frames: number(withFrames), refs: number(withRefs) });
   }
 
   for (const [key, what] of [["checkpoint", "the checkpoint"], ["soundscape", "the soundscape"],
@@ -1432,6 +1509,16 @@ export function singleProblem(timeline) {
       .filter((value) => value && value !== "auto"));
     if (key !== "checkpoint" && (timeline[key] || "").trim()) seen.add((timeline[key] || "").trim());
     if (seen.size > 1) return t("The shots disagree about {what}. One pass has only one.", { what: t(what) });
+  }
+  return null;
+}
+
+/** The first thing wrong with any pass in the strip, or null — for the places
+ *  that report about the timeline rather than about one casing. */
+export function timelineProblem(timeline) {
+  for (const pass of passes(timeline)) {
+    const problem = passProblem(timeline, pass);
+    if (problem) return problem;
   }
   return null;
 }

@@ -113,9 +113,13 @@ export const css = `
   display: flex; gap: 2px; padding: 2px; border-radius: 10px;
   background: var(--mmc-surface-3); border: 1px solid var(--mmc-line);
 }
+/* Laid out rather than left to the button's own centring, because the middle
+   position is a span and an inline box would sit its text a couple of pixels
+   above the two buttons' — which is exactly what it looked like. */
 .mmc-tl-render-opt {
+  display: flex; align-items: center; justify-content: center;
   height: 24px; padding: 0 10px; border: 0; border-radius: 8px; background: none;
-  color: var(--mmc-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  color: var(--mmc-dim); font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer;
 }
 .mmc-tl-render-opt:hover { color: var(--mmc-text); }
 .mmc-tl-render-opt.on { background: var(--mmc-surface); color: var(--mmc-text); }
@@ -124,17 +128,31 @@ export const css = `
    Reads as a note rather than an alarm — the timeline is still saveable, and
    switching back to chained makes it correct again. */
 .mmc-tl-problem {
-  display: flex; gap: 8px; align-items: baseline; flex-basis: 100%;
+  display: flex; gap: 8px; align-items: baseline;
   font-size: 11px; line-height: 1.4; color: #e0743c;
 }
 .mmc-tl-problem .mmc-note-key { color: inherit; opacity: .8; }
 
 /* Laid out left to right and scrolled, not wrapped: a timeline that wraps onto
-   a second line stops reading as time. */
+   a second line stops reading as time.
+ *
+ * Three rows shared by everything on it: the pass rails, the cards, and the
+ * notes underneath. One grid rather than one height per column, because a rail
+ * that only some columns have and a note that only one column carries used to
+ * push their own cards up and down — cards ended up at three different heights
+ * on the same strip. On the grid every rail sits on one line, every card top
+ * and bottom on another, and a note under one pass moves nothing above it.
+ * Columns are min-content so a card's set width is what sizes its column, and
+ * a long note wraps into that width instead of stretching the pass to fit it.
+ */
 .mmc-tl-strip {
-  display: flex; align-items: stretch; gap: 0;
+  display: grid; grid-auto-flow: column; grid-auto-columns: min-content;
+  grid-template-rows: auto 1fr auto; row-gap: 6px;
   overflow-x: auto; padding-bottom: 10px; min-height: 190px;
 }
+/* The cards row, which is all a seam or the add button occupies: they have no
+   rail above them and nothing to say underneath. */
+.mmc-tl-seam, .mmc-tl-add { grid-row: 2; }
 .mmc-tl-card {
   flex: 0 0 auto; box-sizing: border-box;
   display: flex; flex-direction: column; gap: 8px;
@@ -170,31 +188,110 @@ export const css = `
 
 /* The seam between two cards. It is a control, so it is wide enough to hit. */
 .mmc-tl-join {
-  flex: 0 0 auto; align-self: center; width: 62px;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   background: none; border: 0; color: var(--mmc-off); cursor: pointer;
-  font-family: inherit; font-size: 10px; padding: 4px 0;
+  font-family: inherit; font-size: 10px; line-height: 1.25; padding: 4px 2px;
+  border-radius: 8px;
 }
-.mmc-tl-join span:first-child { font-size: 15px; }
-.mmc-tl-join:hover:not(:disabled) { color: var(--mmc-text); }
+.mmc-tl-join span:first-child { font-size: 15px; line-height: 1; }
+.mmc-tl-join:hover:not(:disabled) { color: var(--mmc-text); background: var(--mmc-surface-2); }
 .mmc-tl-join.on { color: var(--mmc-accent); }
 .mmc-tl-join:disabled { cursor: not-allowed; opacity: .5; }
 
 /* Picture above, sound below — the two switches on one seam. Stacked rather
-   than side by side so the seam stays as narrow as it was. */
+   than side by side so the seam stays as narrow as it was.
+ *
+ * The padding is the card's own — the enclosure's inset plus the card's padding
+ * and head — so the switches open level with the first line of the prompt beside
+ * them and the merge button sits on the row of Edit buttons. A seam carrying two
+ * chips and a seam carrying four then open and close on the same two lines,
+ * instead of each centring itself on a different height. */
 .mmc-tl-seam {
-  flex: 0 0 auto; align-self: center;
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  width: 78px; box-sizing: border-box; padding: 47px 3px 19px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px;
 }
-/* The same place, in one pass: not a control, because a cut inside a single
-   generation is a line of the description rather than a wiring decision. What
-   it shows is the timestamp that line will carry. */
+/* The join inside a pass. Not the seam's two switches, because there is no seam
+   to switch: what it shows is the cut time the description will carry, and what
+   clicking it does is split the pass back apart. Narrow, and without the seam's
+   breathing room on either side — the cards it separates are one piece of film
+   and should look it. */
 .mmc-tl-cut {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  width: 62px; padding: 4px 0; color: var(--mmc-off); font-size: 10px;
-  font-variant-numeric: tabular-nums; cursor: default;
+  flex: 0 0 auto; align-self: stretch;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  width: 52px; padding: 0; border: 0; border-left: 1px dashed rgba(240,166,60,.32);
+  background: none; color: rgba(240,166,60,.55); font-family: inherit; font-size: 9px;
+  font-variant-numeric: tabular-nums; cursor: pointer;
 }
-.mmc-tl-cut span:first-child { font-size: 15px; }
+.mmc-tl-cut span:first-child { font-size: 13px; }
+.mmc-tl-cut:hover { color: var(--mmc-accent); border-left-color: var(--mmc-accent); }
+
+/* --- passes --------------------------------------------------------------- */
+
+/* Every card sits in one of these whether or not it shares it, so the cards
+   line up whatever the runs look like. Only a pass holding more than one draws
+   itself. It takes all three of the strip's rows and hands them straight to its
+   rail, its cards and its note, so those line up across passes too. */
+.mmc-tl-pass { grid-row: 1 / -1; display: grid; grid-template-rows: subgrid; }
+/* Fills the enclosure so the cards inside go on stretching to the strip's
+   height, which is what they did when they were its direct children. It carries
+   the casing's inset and border whether or not the casing is drawn, so a card
+   that shares a pass and a card that is one are the same box either way — the
+   alternative was every merged card sitting 6 px shorter than its neighbours. */
+.mmc-tl-pass-cards {
+  display: flex; align-items: stretch; min-height: 0;
+  padding: 5px; border: 1px solid transparent; border-radius: 16px;
+}
+/* The rail costs nothing until the strip has a pass in it — an untouched
+   timeline is the strip it always was, with no empty band above the cards.
+   Emptied rather than removed: it is the row every column is measured against,
+   and a pass that dropped it would slide its cards up into the rail's line. */
+.mmc-tl-pass-head { display: flex; height: 0; align-items: center; gap: 8px; padding: 0 4px; overflow: hidden; }
+.mmc-tl-strip.has-pass .mmc-tl-pass-head { height: 20px; }
+
+/* The casing: one generation, drawn as one piece of film. The cards inside give
+   up their own borders and become panels of it. */
+.mmc-tl-pass.on .mmc-tl-pass-cards {
+  background: var(--mmc-surface-2); border-color: rgba(240,166,60,.32);
+}
+.mmc-tl-pass.on .mmc-tl-card { background: none; border-color: transparent; }
+.mmc-tl-pass.on .mmc-tl-card:hover { border-color: rgba(255,255,255,.12); }
+.mmc-tl-pass-name {
+  display: flex; align-items: center; gap: 5px; color: var(--mmc-accent); font-size: 11px;
+}
+.mmc-tl-pass-name svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* The rail is as wide as the shots under it, which for a pass of two short ones
+   is not much. The length is what gives first: the name says what the enclosure
+   is and Split is the way out of it, and neither is worth losing to a number
+   that is also on the bar. */
+.mmc-tl-pass-name, .mmc-tl-pass-split { flex: 0 0 auto; }
+.mmc-tl-pass-len {
+  color: var(--mmc-dim); font-size: 11px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mmc-tl-pass-len.off-distribution { color: #e0743c; }
+.mmc-tl-pass-head .mmc-tl-mode { margin-left: 0; }
+.mmc-tl-pass-split { margin-left: auto; font-size: 11px; }
+/* The refusals compile.py would raise, under the pass they are about. */
+.mmc-tl-pass .mmc-tl-problem { padding: 0 4px; }
+
+/* The third answer on a seam: no seam at all. Held at the foot of the seam,
+   level with the cards' own buttons, and set apart from the switches above it —
+   they say how this join behaves, this says whether it is a join. */
+.mmc-tl-join-merge {
+  margin-top: auto; padding-top: 6px; border-top: 1px solid var(--mmc-line);
+  border-radius: 0 0 8px 8px;
+}
+.mmc-tl-join-merge span:first-child { font-size: 12px; }
+.mmc-tl-join-merge:hover:not(:disabled) { color: var(--mmc-accent); }
+
+/* Reported, not offered: some seams merged and some not is a real state of the
+   strip, but there is nothing for clicking it to do. So it is not dressed as
+   the selected one of the two answers either — it wears the accent the merged
+   passes below it wear, and reads as a readout wedged between them. */
+.mmc-tl-render-opt.mmc-tl-render-mixed {
+  cursor: default; color: var(--mmc-accent); background: rgba(240,166,60,.14);
+}
 
 .mmc-tl-join-sound { padding-top: 0; }
 .mmc-tl-join-sound svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
@@ -206,7 +303,7 @@ export const css = `
 .mmc-tl-join-from span:first-child { font-size: 10px; }
 
 .mmc-tl-add {
-  flex: 0 0 auto; align-self: stretch; width: 108px; margin-left: 12px;
+  width: 108px; box-sizing: border-box; margin: 6px 0 6px 12px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
   background: none; border: 1px dashed var(--mmc-line); border-radius: 14px;
   color: var(--mmc-dim); font-family: inherit; font-size: 12px; cursor: pointer;
@@ -232,6 +329,17 @@ export const css = `
 /* Segments at their real relative lengths — the node's one honest picture of
    the timeline without room for the strip itself. */
 .mmc-tl-lane { display: flex; gap: 4px; height: 40px; cursor: pointer; flex: 0 0 auto; }
+/* A pass in the lane: its shots close ranks and share one outline, which is the
+   casing's reading at a tenth the size. A pass of one is just its own tick. */
+.mmc-tl-run { display: flex; gap: 4px; min-width: 0; }
+.mmc-tl-run.on {
+  gap: 0; border: 1px solid rgba(240,166,60,.32); border-radius: 8px; padding: 1px;
+  background: rgba(240,166,60,.08);
+}
+.mmc-tl-run.on .mmc-tl-tick {
+  background: none; border: 0; border-left: 1px dashed rgba(240,166,60,.4); border-radius: 0;
+}
+.mmc-tl-run.on .mmc-tl-tick:first-child { border-left: 0; }
 .mmc-tl-tick {
   display: flex; align-items: center; justify-content: center; gap: 5px;
   background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
