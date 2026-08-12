@@ -56,14 +56,25 @@ _TAKES_NOTE = {
     "object": "only the object itself is the reference. The picture's "
               "surroundings, lighting and arrangement are not part of it: "
               "define the subject as the object alone and retain nothing else "
-              "from this picture",
+              "from this picture. Anyone the request names is not in this "
+              "picture unless you can actually see them there",
     "scene": "only the place is the reference — the environment, its surfaces "
              "and its light. Any people or passing objects in the picture, and "
-             "its framing, are not part of it",
+             "its framing, are not part of it. Nobody the request names is in "
+             "this picture unless you can actually see them there",
     "style": "only the look is the reference — medium, palette, light and "
              "rendering. The picture's subjects, layout and content are not "
-             "part of it",
+             "part of it. Nothing the request names is in this picture unless "
+             "you can actually see it there",
 }
+
+# The un-narrowed case. `takes` defaults to "full", so this is what most
+# reference images ride in with, and it is where the hallucination actually
+# bites: with no scope note at all, the one attached picture becomes the place
+# the model grounds whoever the request mentions, seen there or not.
+_FULL_NOTE = ("describe as coming from this picture only what you can "
+              "actually see in it — a subject the request names that it does "
+              "not show is defined from the request alone, with no handle")
 
 
 def _slot(asset, label, show_label):
@@ -79,8 +90,8 @@ def _slot(asset, label, show_label):
             "audio": "a reference audio clip",
         }[asset.kind]
     row = {"handle": asset.handle, "what": f"{what} ({os.path.basename(asset.filename)})"}
-    if asset.kind == "image" and asset.role == "reference" and asset.takes in _TAKES_NOTE:
-        row["note"] = _TAKES_NOTE[asset.takes]
+    if asset.kind == "image" and asset.role == "reference":
+        row["note"] = _TAKES_NOTE.get(asset.takes, _FULL_NOTE)
     # Only where the ordinal is unambiguous. Handles are allocated per segment,
     # so across a strip two cards each have a `<Picture 1>` — showing both would
     # tell the model that one label means two files.
