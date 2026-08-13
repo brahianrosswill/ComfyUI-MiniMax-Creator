@@ -328,7 +328,10 @@ export const css = `
 .mmc-tl-summary-prompt.empty { color: var(--mmc-off); }
 /* Segments at their real relative lengths — the node's one honest picture of
    the timeline without room for the strip itself. */
-.mmc-tl-lane { display: flex; gap: 4px; height: 40px; cursor: pointer; flex: 0 0 auto; }
+.mmc-tl-reel {
+  display: flex; flex-direction: column; gap: 3px; height: 40px; cursor: pointer; flex: 0 0 auto;
+}
+.mmc-tl-lane { display: flex; gap: 4px; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 /* A pass in the lane: its shots close ranks and share one outline, which is the
    casing's reading at a tenth the size. A pass of one is just its own tick. */
 .mmc-tl-run { display: flex; gap: 4px; min-width: 0; }
@@ -354,6 +357,86 @@ export const css = `
   background: rgba(240,166,60,.13); border-color: rgba(240,166,60,.32); color: var(--mmc-accent);
 }
 .mmc-tl-tick.on .mmc-tl-tick-n { color: var(--mmc-accent); }
+
+/* --- the crowded reel ------------------------------------------------------
+
+   Past about forty shots a block is twenty pixels wide, and a tile with a
+   number, a length and a rounded border is a smear. So the lane closes: no
+   gaps, no radius, one continuous band divided by frame lines, and the labels
+   move off the picture and onto the edge. What is drawn inside the band is only
+   what is not true of the whole strip — a merged pass, a hard cut — because a
+   mark every shot carries is a mark that says nothing.
+
+   Set from fitLane(), which measures rather than counts: the same forty shots
+   are roomy on a wide node and crowded on a narrow one. */
+
+.mmc-tl-lane.dense {
+  gap: 0; border: 1px solid var(--mmc-line); border-radius: 4px;
+  /* Lit from the top, so the row of cells reads as one physical strip rather
+     than as a grid of empty boxes. */
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0) 60%),
+              var(--mmc-surface-2);
+}
+.mmc-tl-lane.dense .mmc-tl-run { gap: 0; flex-basis: 0; }
+.mmc-tl-lane.dense .mmc-tl-tick {
+  border: 0; border-left: 1px solid var(--mmc-line); border-radius: 0;
+  background: none; min-width: 0; padding: 0;
+  /* Length alone decides the width here. With the default auto basis a block
+     starts at the width of its own label and grows from there, so a two-digit
+     number quietly buys its shot a few pixels the shot has not earned — which
+     at this scale is most of a block. */
+  flex-basis: 0;
+}
+.mmc-tl-lane.dense .mmc-tl-run:first-child .mmc-tl-tick:first-child { border-left: 0; }
+.mmc-tl-lane.dense .mmc-tl-tick-n { font-size: 11px; color: var(--mmc-dim); }
+.mmc-tl-lane.dense .mmc-tl-tick.on .mmc-tl-tick-n { color: var(--mmc-dim); }
+/* What a block gives up as it narrows, in order. The length goes first — a band
+   drawn to scale is already a picture of the lengths — and the seam glyph goes
+   with it, since the join itself says that. Then the number. Set per block by
+   fitLane(), so a short shot beside a long one gives up its own labels without
+   taking the long one's with it. */
+.mmc-tl-tick.narrow .mmc-tl-tick-s,
+.mmc-tl-tick.narrow svg { display: none; }
+.mmc-tl-tick.bare .mmc-tl-tick-n { display: none; }
+/* And nothing at all once no block on the lane can hold a number: the band goes
+   bare and the edge row below does the counting. */
+.mmc-tl-lane.crowded .mmc-tl-tick-n,
+.mmc-tl-lane.crowded .mmc-tl-tick-s,
+.mmc-tl-lane.crowded .mmc-tl-tick svg { display: none; }
+/* Continuing is the ordinary case in a long strip, so it is drawn as the
+   ordinary case: an unbroken band. */
+.mmc-tl-lane.dense .mmc-tl-tick.on { background: none; border-color: var(--mmc-line); }
+/* A hard cut is the exception, so it is the thing that shows: a real break in
+   the film with a bright edge on the far side of it — a splice. */
+.mmc-tl-lane.dense .mmc-tl-tick.cut {
+  margin-left: 3px; border-left-color: transparent;
+  box-shadow: inset 2px 0 0 rgba(255,255,255,.34);
+}
+/* A pass keeps its accent — four of them among forty single shots is exactly
+   the reading worth spending colour on. Drawn as an inset ring rather than a
+   border and padding, which at this width would steal four pixels from the run
+   and quietly bend the proportions the lane exists to show. */
+.mmc-tl-lane.dense .mmc-tl-run.on {
+  border: 0; border-radius: 0; padding: 0;
+  background: rgba(240,166,60,.16); box-shadow: inset 0 0 0 1px rgba(240,166,60,.42);
+}
+.mmc-tl-lane.dense .mmc-tl-run.on .mmc-tl-tick { border-left: 1px dashed rgba(240,166,60,.5); }
+.mmc-tl-lane.dense .mmc-tl-tick:hover { background: rgba(255,255,255,.13); }
+/* The band is one click target, so the band as a whole answers the pointer —
+   the frame lines inside it are structure, not forty separate buttons. */
+.mmc-tl-lane.dense:hover { border-color: rgba(255,255,255,.20); }
+
+/* Edge code: the numerals down the side of the film, not across the frame.
+   Placed in pixels by fitLane() against the blocks it measured, so a number
+   sits on the shot it names however the durations divide the lane. */
+.mmc-tl-edge { position: relative; flex: 0 0 10px; }
+.mmc-tl-edge:empty { display: none; }
+.mmc-tl-edge-n {
+  position: absolute; top: 0; padding-left: 3px;
+  border-left: 1px solid rgba(255,255,255,.22);
+  font-size: 9px; line-height: 10px; color: var(--mmc-dim);
+  font-variant-numeric: tabular-nums; letter-spacing: .04em;
+}
 
 /* Where the Creator puts its mode badge: the right end of the pill row. */
 .mmc-tl-open {

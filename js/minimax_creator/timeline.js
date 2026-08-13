@@ -1214,6 +1214,7 @@ export class TimelineBody {
 
   destroy() {
     this.stage?.destroy();
+    this.laneFit?.disconnect();
   }
 
   /** See `CreatorEditor.adoptWeights` — same rescue, same reason. */
@@ -1279,6 +1280,12 @@ export class TimelineBody {
     // Same order as the Creator: what you are asking for, then how it is run.
     // The picture is beside the node, in the satellite.
     this.root.replaceChildren(this.renderPanel(), this.renderSampling());
+    // The reel is the one part of the body whose reading depends on the width
+    // it ended up with, so it is fitted after it is in the document — once now,
+    // and again from its own observer whenever the node is resized.
+    this.laneFit?.disconnect();
+    this.laneFit?.observe(this.lane);
+    this.fitLane();
   }
 
   renderPanel() {
@@ -1308,42 +1315,7 @@ export class TimelineBody {
       // real relative lengths, so a 10-second shot is visibly twice a 5. Merged
       // shots close ranks under one outline — the same reading as the modal's
       // casing, at a tenth the size.
-      el("div", { class: "mmc-tl-lane", onclick: () => this.open() }, passes.map((pass) => {
-        const { at, total } = S.cutTimes(pass.segments);
-        const shared = pass.segments.length > 1;
-        return el("div", {
-          // The run takes the width its shots add up to, and they divide it
-          // between themselves — so the lane stays proportional whatever is
-          // merged into what.
-          class: `mmc-tl-run${shared ? " on" : ""}`,
-          style: { flexGrow: String(Math.max(1, total)) },
-        }, pass.segments.map((segment, offset) => {
-          const index = pass.start + offset;
-          // A seam only exists in front of a pass. Inside one the cut is a line
-          // of the description, so the block reads as a shot rather than a join.
-          const continues = !offset && index > 0 && S.continues(segment);
-          return el("div", {
-            class: `mmc-tl-tick${continues ? " on" : ""}`,
-            style: { flexGrow: String(Math.max(1, segment.duration_s)) },
-            title: shared
-              ? (offset
-                  ? t("Shot {n} · {s} s · cuts in at {time} of this pass",
-                      { n: index + 1, s: segment.duration_s, time: S.shotTime(at[offset]) })
-                  : t("Shot {n} · {s} s · opens a pass of {count}",
-                      { n: index + 1, s: segment.duration_s, count: pass.segments.length }))
-              : (continues
-                  ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
-                      { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
-                        from: S.continueSource(segment, index) })
-                  : t("Segment {n} · {s} s · {mode} · hard cut",
-                      { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
-          }, [
-            ...(continues ? [icon("link", 13)] : []),
-            el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
-            el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
-          ]);
-        }));
-      })),
+      this.renderLane(passes),
       el("div", { class: "mmc-pills" }, [
         // The render mode leads, because it is the one thing about this node
         // that changes what all the other numbers mean.
@@ -1415,6 +1387,133 @@ export class TimelineBody {
         ...(this.preStage ? [this.renderPreStagePill()] : []),
       ]),
     ]);
+  }
+
+  /**
+   * The reel: every shot as a block of the width its own length earns.
+   *
+   * Two readings out of one markup, chosen by how much room a block gets — see
+   * `fitLane`. Roomy, a block is a labelled tile: its number, its length, a link
+   * glyph where the seam continues. Crowded, the labels come off and the row
+   * closes into a single band with the shots divided by frame lines, numbered
+   * along its edge the way footage counters run down the edge of film rather
+   * than across the picture. The proportions are the same band either way; what
+   * changes is only what there is room to print on it.
+   */
+  renderLane(passes) {
+    this.lane = el("div", { class: "mmc-tl-lane" }, passes.map((pass) => {
+      const { at, total } = S.cutTimes(pass.segments);
+      const shared = pass.segments.length > 1;
+      return el("div", {
+        // The run takes the width its shots add up to, and they divide it
+        // between themselves — so the lane stays proportional whatever is
+        // merged into what.
+        class: `mmc-tl-run${shared ? " on" : ""}`,
+        style: { flexGrow: String(Math.max(1, total)) },
+      }, pass.segments.map((segment, offset) => {
+        const index = pass.start + offset;
+        // A seam only exists in front of a pass. Inside one the cut is a line
+        // of the description, so the block reads as a shot rather than a join.
+        const continues = !offset && index > 0 && S.continues(segment);
+        // Crowded, the reel marks the exception rather than the rule: a strip
+        // whose seams nearly all continue is one unbroken take, and colouring
+        // every one of them says only that the feature exists. The hard cut is
+        // the thing that happens rarely, so the hard cut is what gets drawn —
+        // as a real break in the band, which is what it is.
+        const cut = !offset && index > 0 && !continues;
+        return el("div", {
+          class: `mmc-tl-tick${continues ? " on" : ""}${cut ? " cut" : ""}`,
+          style: { flexGrow: String(Math.max(1, segment.duration_s)) },
+          title: shared
+            ? (offset
+                ? t("Shot {n} · {s} s · cuts in at {time} of this pass",
+                    { n: index + 1, s: segment.duration_s, time: S.shotTime(at[offset]) })
+                : t("Shot {n} · {s} s · opens a pass of {count}",
+                    { n: index + 1, s: segment.duration_s, count: pass.segments.length }))
+            : (continues
+                ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
+                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
+                      from: S.continueSource(segment, index) })
+                : t("Segment {n} · {s} s · {mode} · hard cut",
+                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
+        }, [
+          ...(continues ? [icon("link", 13)] : []),
+          el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
+          el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
+        ]);
+      }));
+    }));
+    this.edge = el("div", { class: "mmc-tl-edge" });
+    // The observer is the lane's, not the render's: the node is resizable, and
+    // dragging it narrower is exactly how a roomy strip becomes a crowded one.
+    this.laneFit ??= new ResizeObserver(() => this.fitLane());
+    return el("div", { class: "mmc-tl-reel", onclick: () => this.open() }, [this.lane, this.edge]);
+  }
+
+  /**
+   * Measure the lane and pick the reading that fits.
+   *
+   * A block needs about 46 px to hold "12" and "15s" side by side, and about
+   * 30 to hold the number alone — under which the same markup draws the digits
+   * of one shot over the digits of the next, which is what a ten-minute strip
+   * of forty-seven shots looked like. So nothing is guessed from the count:
+   * the lane asks how wide its own blocks came out and gives up one label at a
+   * time, in the order of what it can afford to lose — the length first, since
+   * a band drawn to scale is already a picture of the lengths.
+   */
+  fitLane() {
+    const lane = this.lane;
+    if (!lane?.isConnected) return;
+    const blocks = [...lane.querySelectorAll(".mmc-tl-tick")];
+    const width = lane.clientWidth;
+    // Called once before layout on every render; the observer calls back the
+    // moment there is a width to measure.
+    if (!blocks.length || !width) return;
+
+    // The average block, not the narrowest: whether this is a strip of tiles or
+    // a band is one decision about the whole lane, and a single three-second
+    // shot among twenty long ones should not make that decision for it.
+    const per = width / blocks.length;
+    const dense = per < 46;
+    const crowded = per < 30;
+    lane.classList.toggle("dense", dense);
+    lane.classList.toggle("crowded", crowded);
+
+    if (!crowded) {
+      // Above that, each block answers for itself: whether the lane is a strip
+      // of tiles or a band is one decision about the whole lane, but what fits
+      // on a block is a question about that block. A three-second shot beside a
+      // twenty is a quarter of its width, and giving both the same labels is
+      // how the short one ends up with a clipped one.
+      this.edge.replaceChildren();
+      // Measured from the block at full label, never from the block as it was
+      // left last time: a hidden label makes a block narrower, so measuring the
+      // trimmed one would find it narrower still and never give the label back.
+      for (const block of blocks) block.classList.remove("narrow", "bare");
+      for (const block of blocks) {
+        const room = block.getBoundingClientRect().width;
+        block.classList.toggle("narrow", room < 46);
+        // What the number itself needs — shot 7 fits where shot 47 does not,
+        // and dropping a digit that would have fitted reads as a blank block
+        // rather than as a tight one.
+        const digits = block.querySelector(".mmc-tl-tick-n")?.textContent.length ?? 2;
+        block.classList.toggle("bare", room < 16 + 9 * digits);
+      }
+      return;
+    }
+
+    // Edge code: a numeral every few shots, at the widest cadence that still
+    // keeps two numbers well clear of each other. Sparse on purpose — its job
+    // is to make the band countable, not to name every block on it.
+    const step = [1, 2, 5, 10, 20, 25, 50].find((n) => per * n >= 56) ?? 100;
+    const origin = lane.getBoundingClientRect().left;
+    this.edge.replaceChildren(...blocks.flatMap((block, index) => (index % step ? [] : [
+      el("span", {
+        class: "mmc-tl-edge-n",
+        style: { left: `${Math.round(block.getBoundingClientRect().left - origin)}px` },
+        text: String(index + 1),
+      }),
+    ])));
   }
 
   /** Same pill as the Creator's — see `CreatorEditor.renderPreStagePill`. */

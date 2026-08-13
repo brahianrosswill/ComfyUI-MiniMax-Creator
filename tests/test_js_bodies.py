@@ -96,6 +96,11 @@ globalThis.window = { addEventListener() {}, removeEventListener() {},
                       devicePixelRatio: 1 };
 globalThis.requestAnimationFrame = () => {};
 globalThis.cancelAnimationFrame = () => {};
+// The timeline lane measures itself to decide how much of each block's label
+// fits — see TimelineBody.fitLane. Nothing in this DOM has a width, so the
+// measure bails and the observer has nothing to report; it exists so that
+// registering one is not a crash.
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 globalThis.Image = class { set src(v) {} };
 globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
 export const NodeClass = Node;
