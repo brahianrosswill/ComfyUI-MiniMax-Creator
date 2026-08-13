@@ -428,6 +428,7 @@ python3 tests/test_refine.py
 python3 tests/test_outputs.py         # what an output prefix may be
 python3 tests/test_settings.py        # what the settings file may hold
 python3 tests/test_canvas_mirror.py   # canvas.js against canvas.py
+python3 tests/test_piece_mirror.py    # an old creator_data blob lifts to one shot
 python3 tests/test_prestage_mirror.py
 python3 tests/test_outputs_mirror.py  # outputs.js against outputs.py
 python3 tests/test_js_bodies.py       # the frontend loads and every node body mounts

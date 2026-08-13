@@ -689,6 +689,39 @@ check("both sample identically",
       {k: v for k, v in tl_kinds["KSampler"][0][1].items() if k not in ("model", "positive", "negative", "latent_image")},
       {k: v for k, v in sampler.items() if k not in ("model", "positive", "negative", "latent_image")})
 
+# ---- ...and a version-1 blob is one too --------------------------------------
+#
+# The same claim, made of the blob rather than of the request: hand the Timeline
+# the *Creator's own* `creator_data` — the shape every workflow saved before the
+# two nodes became one still holds — and `compile.as_piece` has to lift it into
+# the strip that emits exactly the graph the Creator emits from it directly.
+#
+# This is what says the merge is safe to make. Until the two node classes are
+# one, it is the only thing standing between an old workflow and a silently
+# different render; after they are one, it is the test that the lift is load-
+# bearing rather than decorative.
+
+lifted_out = with_id(tl.MiniMaxH3Timeline, NODE_ID, lambda: tl.MiniMaxH3Timeline.execute(
+    timeline_data=DATA,
+    seed=100, steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple"))
+lifted_kinds = by_class(lifted_out.expand)
+
+check("a v1 creator blob emits the same node classes",
+      {k: len(v) for k, v in sorted(lifted_kinds.items())},
+      {k: len(v) for k, v in sorted(kinds.items())})
+check("...loading the same files", loader_files(lifted_kinds), loader_files(kinds))
+check("...and sampling the same way",
+      {k: v for k, v in lifted_kinds["KSampler"][0][1].items()
+       if k not in ("model", "positive", "negative", "latent_image")},
+      {k: v for k, v in sampler.items()
+       if k not in ("model", "positive", "negative", "latent_image")})
+
+lifted_payload = json.loads(lifted_kinds["MiniMaxH3TimelineSegment"][0][1]["segment_data"])
+lifted_compiled = compiler.compile_segment(lifted_payload, media.image_size)
+for field in ("prompt", "mode", "checkpoint", "frames", "seconds", "width", "height"):
+    check(f"...and compiling the same {field}",
+          getattr(lifted_compiled, field), getattr(creator_compiled, field))
+
 # --- the two-pass upscale ----------------------------------------------------
 #
 # Past the native short edge the render grows a refine pass: a second segment

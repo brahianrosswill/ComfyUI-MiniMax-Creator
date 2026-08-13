@@ -1237,7 +1237,10 @@ def timeline_pool(data):
     closing frame, so a pool entry claiming a frame role is a mistake, not a
     feature to resolve.
     """
-    raw = data.get("assets")
+    # A lone generation's `assets` are its own keyframes and references, not a
+    # pool — lifted first so an old blob reaching here through the refine route
+    # is refused for nothing.
+    raw = as_piece(data).get("assets")
     if not raw:
         return []
     pool = _parse_assets(raw)
@@ -1300,6 +1303,62 @@ def _inject_pool(pool, request, extra_texts=()):
     return inject + own if inject else own
 
 
+# The fields a piece owns and a shot does not — the whole of the old
+# creator/timeline split, written down as a list. A lone generation kept all of
+# these inline because it had nowhere else to keep them; a piece holds them once
+# and every shot on the strip is held to them. Mirrors `state.PIECE_FIELDS`.
+PIECE_FIELDS = ("aspect", "short_edge", "upscale", "sample_edge",
+                "refine_denoise", "models", "turbo")
+
+# What only a lone generation ever carried at the top level. Used to tell a
+# version-1 `creator_data` blob from a fresh node's "{}" — which is an empty
+# piece and must not become a shot nobody wrote.
+_LONE_SHOT_KEYS = ("prompt", "assets", "loras", "duration_s", "checkpoint",
+                   "refined", "soundscape", "music")
+
+
+def as_piece(data):
+    """A version-1 `creator_data` blob, read as the one-shot piece it always was.
+
+    Every workflow saved while the Creator and the Timeline were two nodes holds
+    one of these, so this is not a migration that runs once — it runs on every
+    load of every one of those workflows, for good. It is the exact inverse of
+    the split `PIECE_FIELDS` names and nothing else: those fields move up, and
+    what is left is the shot.
+
+    Idempotent. A blob that already has a strip is returned unchanged, so the
+    entry points below can each ask without anyone having to track who asked
+    first. A v2 blob always writes `segments` (possibly empty), which is what
+    makes the absence of that key a reliable answer rather than a guess.
+
+    Three placements are the whole of the care needed here:
+
+    - `prompt` goes to the shot, never to the piece. A piece's prompt is the
+      standing description every shot inherits, and promoting one shot's text to
+      it would change what a *second* shot generates the moment one is added.
+    - `assets` goes to the shot too. At piece level the key means the reference
+      pool — reference role only, cited by handle — and a keyframe cannot live
+      there; `timeline_pool` refuses one outright.
+    - `models` is emitted even when the blob carried none, so a lifted creator
+      goes on routing the way it ran. The empty piece routes to Ref2VA by
+      preference, and a blob that rendered on `auto` must not quietly change
+      weights by being opened.
+    """
+    if not isinstance(data, dict) or isinstance(data.get("segments"), list):
+        return data
+    if data.get("version") != 1 and not any(key in data for key in _LONE_SHOT_KEYS):
+        return data
+
+    shot = dict(data)
+    shot.pop("version", None)
+    piece = {"version": 2, "prompt": "", "models": {}}
+    for field in PIECE_FIELDS:
+        if field in shot:
+            piece[field] = shot.pop(field)
+    piece["segments"] = [shot]
+    return piece
+
+
 def timeline_segments(data):
     """The segment list off a timeline blob, validated. Shared by both render modes.
 
@@ -1311,7 +1370,7 @@ def timeline_segments(data):
     if not isinstance(data, dict):
         raise CompileError("timeline_data must be a JSON object")
 
-    segments = data.get("segments")
+    segments = as_piece(data).get("segments")
     if not isinstance(segments, list) or not segments:
         # The state a new node opens in, and the only moment it is wrong is
         # this one — the strip starts empty because a piece may begin with a
@@ -1354,6 +1413,10 @@ def timeline_payloads(data, image_size_lookup=None):
     the whole timeline would mean editing the last shot re-generated all of them.
     A payload only changes when its own segment does.
     """
+    # Rebound rather than lifted piecemeal: everything below reads the piece —
+    # the global prompt, the pool, the canvas — and a half-lifted blob would
+    # read a lone generation's keyframes as a reference pool.
+    data = as_piece(data)
     segments = timeline_segments(data)
     global_prompt = str(data.get("prompt") or "")
     pool = timeline_pool(data)

@@ -870,9 +870,58 @@ function syncCanvas(timeline) {
 
 export { syncCanvas as syncTimeline };
 
+/**
+ * The fields a piece owns and a shot does not — the whole of the old
+ * creator/timeline split, written down as a list. A lone generation kept all of
+ * these inline because it had nowhere else to keep them; a piece holds them once
+ * and every shot on the strip is held to them. `syncCanvas` mirrors the first
+ * five back down, so a segment state still answers `resolved()` on its own.
+ *
+ * Mirrors `compile.PIECE_FIELDS`.
+ */
+export const PIECE_FIELDS = ["aspect", "short_edge", "upscale", "sample_edge",
+                             "refine_denoise", "models", "turbo"];
+
+/** What only a lone generation ever carried at the top level. Tells a version-1
+ *  `creator_data` blob from a fresh node's "{}" — which is an empty piece and
+ *  must not become a shot nobody wrote. Mirrors `compile._LONE_SHOT_KEYS`. */
+const LONE_SHOT_KEYS = ["prompt", "assets", "loras", "duration_s", "checkpoint",
+                        "refined", "soundscape", "music"];
+
+/**
+ * A version-1 `creator_data` blob, read as the one-shot piece it always was.
+ *
+ * The mirror of `compile.as_piece`, and everything argued there holds here: it
+ * runs on every load of every workflow saved while these were two nodes, it is
+ * the exact inverse of the split `PIECE_FIELDS` names, and the three placements
+ * it gets right are `prompt` and `assets` going *down* to the shot while the
+ * seven piece fields go up.
+ *
+ * Idempotent — a blob that already has a strip is returned untouched.
+ */
+export function asPiece(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed.segments)) return parsed;
+  if (parsed.version !== 1 && !LONE_SHOT_KEYS.some((key) => key in parsed)) return parsed;
+
+  const shot = { ...parsed };
+  delete shot.version;
+  // `models` even when the blob carried none: the empty piece routes to Ref2VA
+  // by preference, and a lone generation that rendered on `auto` must not
+  // quietly change weights by being opened. An empty block parses to auto.
+  const piece = { version: 2, prompt: "", models: {} };
+  for (const field of PIECE_FIELDS) {
+    if (field in shot) {
+      piece[field] = shot[field];
+      delete shot[field];
+    }
+  }
+  piece.segments = [shot];
+  return piece;
+}
+
 export function parseTimeline(raw) {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = asPiece(JSON.parse(raw));
     if (parsed && typeof parsed === "object") {
       const timeline = { ...emptyTimeline(), ...parsed };
       // Workflows saved before either existed have no key at all, and a
