@@ -38,6 +38,14 @@ export const css = `
 
 /* --- attached assets ------------------------------------------------------ */
 .mmc-assets { display: flex; gap: 8px; flex-wrap: wrap; }
+/* On a node face the chips are the other thing that used to grow the node: nine
+   references wrap to three rows and push the pills off the bottom. Two rows,
+   then it scrolls — the face is a preview, and everything in it is bounded. */
+.mmc-root .mmc-assets { max-height: 84px; overflow-y: auto; }
+/* ...but not in a window, where there is room and nothing to protect. */
+.mmc-tl-modal .mmc-assets, .mmc-editor-sheet .mmc-assets {
+  max-height: none; overflow: visible;
+}
 .mmc-asset {
   display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 4px;
   background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
@@ -85,8 +93,66 @@ export const css = `
 /* contenteditable, not a textarea: @references are atomic chips, and a textarea
    can only hold flat text. white-space: pre-wrap so the literal "\n" the box
    inserts on Enter renders as a line break. */
+/* --- the face's prompt ---------------------------------------------------- */
+/* The box is typed into on the face, capped to what the node can show, and the
+   corner control is the way into a window when a prompt outgrows it. Pinned
+   over the panel's top-right rather than laid out in the column: it is a way
+   out of the box, not a row of the form, and it must not move the box down by
+   its own height on every node. */
+.mmc-panel { position: relative; }
+.mmc-panel-corner { position: absolute; top: 10px; right: 10px; z-index: 1; }
+.mmc-expand {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border-radius: 8px; cursor: pointer;
+  background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
+  color: var(--mmc-off); opacity: .55; transition: opacity .12s ease, color .12s ease;
+}
+.mmc-panel:hover .mmc-expand { opacity: 1; }
+.mmc-expand:hover { color: var(--mmc-text); border-color: rgba(255,255,255,.2); }
+/* Lit once the text no longer fits: at that point the window is not a shortcut,
+   it is where the writing is. */
+.mmc-expand.on { opacity: 1; color: var(--mmc-accent); border-color: rgba(240,166,60,.45); }
+/* Room for it, so a long first line does not run under the button. */
+.mmc-panel > .mmc-prompt-fold > .mmc-prompt, .mmc-panel > .mmc-prestage-prompt { padding-right: 30px; }
+
+/* The window the face's corner control opens — and the one a timeline segment
+   opens over the strip. One window: both are the same node body over the same
+   kind of state, and the segment's is the one that was right.
+
+   Two class names, not one: .mmc-modal sizes every modal in the pack and lives
+   in picker.js, which the stylesheet concatenates *after* this file — so a
+   single-class rule here loses the cascade and the window silently keeps the
+   picker's 1100x760. */
+/* Wider and taller than the picker it inherits from: this is the one window in
+   the pack you *write* in, and 880 was a column for reading a shot back rather
+   than for holding a paragraph, a rail, a strip of references and the pills at
+   once. Still a measure and not the screen — prose 1700px wide is unreadable
+   however much room there is for it, and the overlay's own 40px keeps it a
+   window rather than a takeover. */
+.mmc-modal.mmc-editor-sheet { width: min(1180px, 100%); height: min(900px, 100%); }
+/* The body inside is a node body — built to fill a DOM widget and to clip
+   anything that would grow it. In here it is the thing that grows: the window
+   scrolls, so the body is free to be as tall as its content. */
+.mmc-editor-sheet-body .mmc-root { height: auto; overflow: visible; padding: 18px 24px 24px; }
+.mmc-editor-sheet-sub { color: var(--mmc-dim); font-size: 13px; }
+.mmc-editor-sheet-body { overflow: auto; flex: 1; min-height: 0; }
+/* In the window the box gets the room the face cannot give it — but still a
+   cap, because a pasted log is not a thing to scroll the whole window past. */
+.mmc-editor-sheet-body .mmc-prompt { max-height: 40vh; }
+
+/* max-height, not just overflow: the box is a flex child of a panel that is
+   itself only as tall as its parent lets it be, and in the node body that
+   parent takes its height from the content — so a long prompt grew the widget
+   and the node with it instead of scrolling. A cap here is the one thing no
+   ancestor can undo. Paste a crash log into it and it is a scroll box.
+
+   In lines rather than in vh: vh is the *screen's* height, and the box that has
+   to fit is a rectangle on a graph — on a tall display 40vh was half again the
+   node, so the box grew the node past what the canvas could show and the text
+   never registered as overflowing at all. Seven lines is what the face shows;
+   the window holds the rest. */
 .mmc-prompt {
-  flex: 1; min-height: 56px; background: none; border: 0; outline: none;
+  flex: 1; min-height: 56px; max-height: 168px; background: none; border: 0; outline: none;
   color: var(--mmc-text); font-family: inherit; font-size: 15px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; overflow-y: auto;
 }

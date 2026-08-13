@@ -49,7 +49,14 @@ class Node {
   }
   // A real input takes its starting value from the attribute, and the pack sets
   // it that way — el() has no special case for `value`.
-  setAttribute(k, v) { this.attrs[k] = v; if (k === "value") this._value = v; }
+  setAttribute(k, v) {
+    this.attrs[k] = v;
+    if (k === "value") this._value = v;
+    // A real element mirrors data-* into dataset, and the prompt box reads its
+    // chips back out of `dataset.handle` — without this the box round-trips to
+    // empty text here and nowhere else.
+    if (k.startsWith("data-")) this.dataset[k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v;
+  }
   getAttribute(k) { return this.attrs[k]; }
   removeAttribute(k) { delete this.attrs[k]; }
   addEventListener(t, fn) { (this.listeners[t] ??= []).push(fn); }
@@ -91,9 +98,21 @@ globalThis.document = {
   querySelectorAll: () => [],
   addEventListener() {}, removeEventListener() {},
 };
+// Ranges and selections: the prompt box places its own caret — putting it at
+// the end of the text is how the window takes over from a full box on the face.
+// Enough of the API to be called, not enough to model a caret; nothing here
+// asks where the caret ended up.
+globalThis.document.createRange = () => ({
+  selectNodeContents() {}, collapse() {}, setStart() {}, setEnd() {},
+  setStartAfter() {}, deleteContents() {}, insertNode() {},
+  getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 }),
+});
 globalThis.window = { addEventListener() {}, removeEventListener() {},
                       getComputedStyle: () => ({}), innerWidth: 1600, innerHeight: 900,
-                      devicePixelRatio: 1 };
+                      devicePixelRatio: 1,
+                      getSelection: () => ({ rangeCount: 0, isCollapsed: true,
+                                             removeAllRanges() {}, addRange() {},
+                                             getRangeAt: () => document.createRange() }) };
 globalThis.requestAnimationFrame = () => {};
 globalThis.cancelAnimationFrame = () => {};
 // The timeline lane measures itself to decide how much of each block's label
@@ -170,6 +189,41 @@ for (const [cls, widget, blob] of [
   }
 }
 
+// The face is typed into, and the window is where a prompt goes when it stops
+// fitting. The box on the face is the live one — that is the whole point of it
+// being there — and the corner control opens the same body full size.
+try {
+  const find = (root, cls) => {
+    let hit = null;
+    const walk = (n) => {
+      if (!hit && String(n.className ?? "").split(" ").includes(cls)) hit = n;
+      (n.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hit;
+  };
+  const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+    version: 1, prompt: "a long sentence about a lighthouse. ".repeat(40),
+    assets: [], loras: [],
+  }));
+  await ext.nodeCreated(node);
+  const expand = find(node.mmcBody.root, "mmc-expand");
+  const before = document.body.children.length;
+  expand?.listeners?.click?.[0]?.();
+  const sheet = document.body.children.at(-1);
+  out.face = {
+    boxOnFace: !!find(node.mmcBody.root, "mmc-prompt"),
+    expand: !!expand,
+    opened: document.body.children.length === before + 1,
+    boxInSheet: !!find(sheet, "mmc-prompt"),
+    // The window's box is a different box over the same state, so the face's
+    // own is still there behind it.
+    sameState: find(sheet, "mmc-prompt") !== find(node.mmcBody.root, "mmc-prompt"),
+  };
+} catch (error) {
+  out.errors.push(`node face: ${error.message}`);
+}
+
 // A strip with supplied footage in it, on the node and in the modal.
 //
 // A clip card is not a generation and holds none of one's machinery — no
@@ -202,6 +256,195 @@ try {
   out.clip.recommitted = body.root.children.length > 0;
 } catch (error) {
   out.errors.push(`clip card: ${error.message}`);
+}
+
+// A new timeline has nothing on it.
+//
+// The strip used to open as one empty shot, which is what made every piece
+// begin with a generation: the card was there before the user chose anything
+// and could not be deleted while it was the only one. Now both renders have to
+// answer for a strip with no cards at all — every accessor that walks the
+// segments, the lane the node draws them in, and the two tiles that are the
+// only thing on the strip.
+try {
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", "{}");
+  await ext.nodeCreated(node);
+  const body = node.mmcBody;
+  const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
+  openTimelineModal({ timeline: body.timeline, onCommit: () => body.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  const modal = document.body.children.at(-1);
+  out.empty = {
+    cards: body.timeline.segments.length,
+    node: body.root.text,
+    modal: modal.text,
+    // ...and it still redraws once something is added, which is the path every
+    // new piece takes on its first click.
+    added: (() => {
+      body.timeline.segments.push(S.continuingSegment());
+      body.commit();
+      return S.passes(body.timeline).length;
+    })(),
+  };
+} catch (error) {
+  out.errors.push(`empty timeline: ${error.message}`);
+}
+
+// Two controls that write through somebody else's callback, and were dead.
+//
+// The render toggle wrote merge flags, which are statements about the seam in
+// front of a card — so on a strip of one card, where there is no seam, it wrote
+// nothing and the control did not move. The route badge in the shot window
+// writes through the *node's* editor, which re-rendered the face and left the
+// window drawing the answer from before the click.
+try {
+  const all = (root, cls) => {
+    const hits = [];
+    const walk = (n) => {
+      if (String(n.className ?? "").split(" ").includes(cls)) hits.push(n);
+      (n.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hits;
+  };
+  const click = (node) => node?.listeners?.click?.[0]?.();
+
+  // One card, and the toggle at both ends of its travel.
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", JSON.stringify({
+    version: 2, segments: [{ prompt: "shot 1", duration_s: 5, assets: [], loras: [] }],
+  }));
+  await ext.nodeCreated(node);
+  const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
+  openTimelineModal({ timeline: node.mmcBody.timeline, onCommit: () => node.mmcBody.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  const opts = () => all(document.body.children.at(-1), "mmc-tl-render-opt");
+  click(opts()[1]);
+  const toSingle = node.mmcBody.timeline.render;
+  click(opts()[0]);
+  const backToChained = node.mmcBody.timeline.render;
+
+  // The route badge, clicked in the window rather than on the face.
+  const creator = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+    version: 1, prompt: "a lighthouse", assets: [], loras: [],
+  }));
+  await ext.nodeCreated(creator);
+  click(all(creator.mmcBody.root, "mmc-expand")[0]);
+  const sheet = document.body.children.at(-1);
+  const badge = () => all(sheet, "mmc-mode")[0];
+  const before = badge()?.text;
+  click(badge());
+  out.controls = {
+    toSingle, backToChained,
+    route: creator.mmcBody.state.models.route,
+    // The window has to redraw itself: the click landed on the node's editor.
+    badgeMoved: badge()?.text !== before,
+  };
+} catch (error) {
+  out.errors.push(`live controls: ${error.message}`);
+}
+
+// One window, opened from two places.
+//
+// A shot's body over a shot's state is the same thing whether the shot is a
+// card on a strip or the node's own — and for a while it was two windows, built
+// and sized separately, so the one the face opened drifted: full-bleed, an
+// uncapped prompt box, a body centred in a column of its own. Both go through
+// `openEditorSheet` now, and this is what says so.
+try {
+  const all = (root, cls) => {
+    const hits = [];
+    const walk = (n) => {
+      if (String(n.className ?? "").split(" ").includes(cls)) hits.push(n);
+      (n.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hits;
+  };
+  const click = (node) => node?.listeners?.click?.[0]?.();
+  const sheetClass = () => String(all(document.body.children.at(-1), "mmc-modal")[0]?.className ?? "");
+
+  const creator = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+    version: 1, prompt: "a lighthouse", assets: [], loras: [],
+  }));
+  await ext.nodeCreated(creator);
+  click(all(creator.mmcBody.root, "mmc-expand")[0]);
+  const fromFace = sheetClass();
+
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", JSON.stringify({
+    version: 2, segments: [{ prompt: "shot 1", duration_s: 5, assets: [], loras: [] }],
+  }));
+  await ext.nodeCreated(node);
+  const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
+  openTimelineModal({ timeline: node.mmcBody.timeline, onCommit: () => node.mmcBody.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  click(all(document.body.children.at(-1), "mmc-tl-edit")[0]);
+  const fromCard = sheetClass();
+
+  out.window = {
+    fromFace, fromCard,
+    same: !!fromFace && fromFace === fromCard,
+    // ...and it is the shot's body in there, not a bare box.
+    body: all(document.body.children.at(-1), "mmc-prompt").length === 1,
+  };
+} catch (error) {
+  out.errors.push(`editor window: ${error.message}`);
+}
+
+// A piece that *opens* on supplied footage.
+//
+// The strip has to hold a card, so a new node starts as one empty shot — which
+// is what used to make the first card of every piece a generation. The card is
+// a placeholder now (`state.blankSegment`) and a clip cut into a strip that is
+// still nothing but that card takes its place, so both renders have to survive
+// a clip at index 0: no pass in front of it to inherit from, and no seam.
+try {
+  const firstBlob = JSON.stringify({
+    version: 2, render: "chained", prompt: "", aspect: "16:9", short_edge: 768,
+    segments: [
+      { kind: "clip", filename: "footage/opening.mp4", duration_s: 8,
+        width: 1920, height: 1080 },
+      { prompt: "shot 2", duration_s: 5, assets: [], loras: [], continue: true },
+    ],
+  });
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", firstBlob);
+  await ext.nodeCreated(node);
+  const body = node.mmcBody;
+  const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
+  openTimelineModal({ timeline: body.timeline, onCommit: () => body.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  out.clipFirst = {
+    mounted: !!node.dom,
+    modal: document.body.children.at(-1).text,
+  };
+} catch (error) {
+  out.errors.push(`clip first: ${error.message}`);
+}
+
+// The global prompt is the same rich box a segment's is, so a pool handle
+// written into it is a chip rather than grey text — that is the whole reason
+// it stopped being a textarea, and a chip is what says "@" works here.
+try {
+  const poolBlob = JSON.stringify({
+    version: 2, render: "chained", prompt: "@ref-1 walks the corridor",
+    aspect: "16:9", short_edge: 768,
+    assets: [{ handle: "ref-1", kind: "image", role: "reference", filename: "sheet.png" }],
+    segments: [{ prompt: "shot 1", duration_s: 5, assets: [], loras: [] }],
+  });
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", poolBlob);
+  await ext.nodeCreated(node);
+  const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
+  openTimelineModal({ timeline: node.mmcBody.timeline, onCommit: () => {} });
+  await new Promise((done) => setTimeout(done, 0));
+  const modal = document.body.children.at(-1);
+  const chips = [];
+  const walk = (element) => {
+    if (element.dataset?.handle) chips.push(element.dataset.handle);
+    (element.children ?? []).forEach(walk);
+  };
+  walk(modal);
+  out.globalPrompt = { chips, text: modal.text.includes("walks the corridor") };
+} catch (error) {
+  out.errors.push(`global prompt: ${error.message}`);
 }
 
 // The pre-stage swaps its whole body when the model pill changes, which is the
@@ -340,6 +583,19 @@ check("the folders tab carries both stored prefixes", settings.get("fields"),
 check("editing a folder writes it back under the server's own key",
       settings.get("posted"), [{"video_prefix": "client/shoot-3/take"}])
 
+# The node face is a preview and the prompt is written in a sheet.
+face = report.get("face", {})
+check("the face carries the live prompt box", face.get("boxOnFace"), True)
+check("...and a way into the window", face.get("expand"), True)
+check("clicking it opens the window", face.get("opened"), True)
+check("...with a box of its own in it", face.get("boxInSheet"), True)
+check("...which is not the face's", face.get("sameState"), True)
+
+# ...and it is the same window a card on the strip opens.
+window = report.get("window", {})
+check("the face and a strip card open one window", window.get("same"), True)
+check("...with the shot's body in it", window.get("body"), True)
+
 # Supplied footage: both renders survive it, and both say it is there.
 clip = report.get("clip", {})
 check("a timeline with a clip in it mounts", clip.get("mounted"), True)
@@ -347,6 +603,42 @@ check("the strip still redraws after a clip is committed", clip.get("recommitted
 for wanted in ("clip", "take-3.mp4"):
     if wanted not in (clip.get("modal") or ""):
         FAILURES.append(f"the timeline modal does not name the clip's {wanted!r}")
+
+# The Timeline node's own rail: the Creator's two clusters, with the piece's
+# reference pool standing in for a card's attachments.
+for wanted in ("Add image", "Add video", "Add audio", "Add LoRA", "Gallery", "Settings"):
+    if wanted not in (clip.get("node") or ""):
+        FAILURES.append(f"the timeline node body has no {wanted!r} tool")
+
+# A new timeline is an empty strip: no card, and two ways to start one.
+empty = report.get("empty", {})
+check("a new timeline holds no cards", empty.get("cards"), 0)
+check("...and still draws after the first is added", empty.get("added"), 1)
+for wanted in ("no frames yet", "Write a segment", "Cut in a clip"):
+    if wanted not in (empty.get("modal") or ""):
+        FAILURES.append(f"the empty strip does not offer {wanted!r}")
+if "Nothing on the strip yet" not in (empty.get("node") or ""):
+    FAILURES.append("the node body does not say the strip is empty")
+
+# Controls that write through an owner's callback still move what they draw.
+controls = report.get("controls", {})
+check("the render toggle moves a one-card strip to one pass", controls.get("toSingle"), "single")
+check("...and back to chained", controls.get("backToChained"), "chained")
+check("the route badge in the window changes the route", controls.get("route"), "fl2va")
+check("...and the window redraws it", controls.get("badgeMoved"), True)
+
+# A piece that opens on footage, and the placeholder rule that lets it.
+first = report.get("clipFirst", {})
+check("a timeline whose first card is a clip mounts", first.get("mounted"), True)
+if "opening.mp4" not in (first.get("modal") or ""):
+    FAILURES.append("the timeline modal does not name the clip it opens on")
+
+
+# "@" in the global prompt: the pool handle is a chip, which is what says the
+# box is the same one a segment has rather than a textarea.
+global_prompt = report.get("globalPrompt", {})
+check("a pool citation in the global prompt is a chip", global_prompt.get("chips"), ["ref-1"])
+check("...and the prose around it is still there", global_prompt.get("text"), True)
 
 check("switching to an image model rebuilds the body",
       report.get("switch", {}).get("image"), "PreStageEditor")

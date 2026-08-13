@@ -15,7 +15,7 @@
 // a draft: it can be corrected, switched off without being thrown away, and
 // reverted to the sentence it came from.
 
-import { el, icon, dismissable, placeNear } from "./dom.js";
+import { el, icon, dismissable, keepScroll, placeNear } from "./dom.js";
 import { stepperPill } from "./pills.js";
 import { t } from "./i18n.js";
 import { api } from "../../../scripts/api.js";
@@ -554,7 +554,9 @@ export class RefinePanel {
     });
     box.value = get() ?? "";
     box.addEventListener("pointerdown", (event) => event.stopPropagation());
-    return box;
+    // A rewrite is longer than the rows it is given, and this box lives in a
+    // node body where the wheel is the canvas's zoom — see `keepScroll`.
+    return keepScroll(box);
   }
 
   render() {

@@ -1313,7 +1313,12 @@ def timeline_segments(data):
 
     segments = data.get("segments")
     if not isinstance(segments, list) or not segments:
-        raise CompileError("a timeline needs at least one segment")
+        # The state a new node opens in, and the only moment it is wrong is
+        # this one — the strip starts empty because a piece may begin with a
+        # written shot or with footage, and neither is a default worth putting
+        # a card there for. See `state.emptyTimeline`.
+        raise CompileError(
+            "this timeline has nothing on it — add a segment, or cut in a clip")
     if len(segments) > MAX_SEGMENTS:
         raise CompileError(f"at most {MAX_SEGMENTS} segments ({len(segments)} given)")
     for index, segment in enumerate(segments):

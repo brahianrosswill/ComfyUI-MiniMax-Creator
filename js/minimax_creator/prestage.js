@@ -19,12 +19,13 @@
 // switching the arch rewrites the row, and the turbo pill exists only on Krea
 // (Turbo *is* a checkpoint there; Ideogram's speed axis is its preset table).
 
-import { el, icon, ICONS, svg, dismissable, placeNear } from "./dom.js";
+import { el, icon, ICONS, svg, dismissable, keepScroll, placeNear } from "./dom.js";
 import { openPicker } from "./picker.js";
 import { openLoras } from "./loras.js";
 import { openFrameGrab } from "./framegrab.js";
 import { openChoicePopover, stepperPill, aspectGlyph, edgeSlider, PILL_GLYPH } from "./pills.js";
 import { CreatorEditor } from "./editor.js";
+import { openEditorSheet } from "./prompt.js";
 import { samplingBar } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { loadCatalog, catalogByFolder } from "./models.js";
@@ -74,9 +75,17 @@ export class PreStageEditor {
       oninput: () => {
         this.state.prompt = this.promptBox.value;
         this.onCommit?.();
+        // ...and the window takes over once the box has run out of room. Same
+        // rule as the Creator's — see `CreatorEditor.onPromptOverflow`.
+        this.onPromptOverflow(
+          this.promptBox.scrollHeight - this.promptBox.clientHeight > 4);
       },
       onpointerdown: (event) => event.stopPropagation(),
       onkeyup: (event) => event.stopPropagation(),
+      // Leaving the box arms the escalation again: the waiver is about the
+      // sentence being written, not about the text. See
+      // `CreatorEditor.onPromptOverflow`.
+      onblur: () => { this.overflowWaived = false; },
     });
 
     this.railHost = el("div");
@@ -86,11 +95,19 @@ export class PreStageEditor {
     this.noticeHost = el("div");
     this.samplingHost = el("div");
 
+    // The box is typed into here, on the face, and the window takes over only
+    // once the text outgrows it. `onFace` tells the face from the window: the
+    // same body is inside that window, and there nothing escalates.
+    this.onFace = !!nodeId;
+    this.expandHost = el("div", { class: "mmc-panel-corner" });
     this.root = el("div", { class: "mmc-root mmc-prestage" }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
-      el("div", { class: "mmc-panel" }, [this.promptBox, this.pillsHost]),
+      el("div", { class: "mmc-panel" }, [
+        ...(this.onFace ? [this.expandHost] : []),
+        this.promptBox, this.pillsHost,
+      ]),
       this.noticeHost,
       this.samplingHost,
     ]);
@@ -225,23 +242,93 @@ export class PreStageEditor {
   render() {
     const state = this.state;
     this.railHost.replaceChildren(this.renderRail());
+    this.renderExpand();
     const chips = [
       ...(state.init ? [this.renderInitChip()] : []),
       ...state.refs.map((ref) => this.renderRefChip(ref)),
     ];
-    this.assetsHost.replaceChildren(...(chips.length ? [el("div", { class: "mmc-assets" }, chips)] : []));
+    this.assetsHost.replaceChildren(...(chips.length ? [keepScroll(el("div", { class: "mmc-assets" }, chips))] : []));
     this.loraHost.replaceChildren(...(state.loras.length ? [this.renderLoras()] : []));
     this.pillsHost.replaceChildren(this.renderPills());
     this.noticeHost.replaceChildren(
       ...(this.notice ? [el("div", { class: "mmc-warn", text: this.notice })] : []));
-    this.samplingHost.replaceChildren(samplingBar({
+    // Only where there are widgets to drive: the window this body also opens
+    // into is a second editor over the same state with no node behind it, and
+    // the sampler row belongs to the node. `samplingBar` reads `widgets.seed`
+    // on the way in, so an absent set is a throw rather than an empty row.
+    this.samplingHost.replaceChildren(...(this.samplingWidgets ? [samplingBar({
       widgets: this.samplingWidgets,
       ...this.widgetIO(),
       set: (name, value) => { this.widgetIO().set(name, value); this.render(); },
       perSegment: false,
       turbo: state.arch === "krea2" ? this.renderTurbo() : [],
       trailing: [this.renderWeightsPill()],
-    }));
+    })] : []));
+    this.sheetEditor?.render();
+  }
+
+  /** The way into the window, always there and lit once the text no longer
+   *  fits. See `CreatorEditor.renderExpand`. */
+  renderExpand() {
+    if (!this.onFace) return;
+    this.expandHost.replaceChildren(el("button", {
+      class: `mmc-expand${this.overflowing ? " on" : ""}`,
+      title: this.overflowing
+        ? t("This prompt is longer than the node can show. Open it in a window.")
+        : t("Open this still in a window — the prompt, its init image, references and LoRAs."),
+      onclick: () => this.openEditor({ caret: "end" }),
+    }, [icon("expand", 14)]));
+  }
+
+  /** See `CreatorEditor.onPromptOverflow`: the window takes the caret the once,
+   *  and not again until the text has fitted and outgrown the box afresh. */
+  onPromptOverflow(over) {
+    if (!this.onFace || over === this.overflowing) return;
+    this.overflowing = over;
+    this.renderExpand();
+    if (!over) {
+      this.overflowWaived = false;
+      return;
+    }
+    if (this.sheet || this.overflowWaived) return;
+    if (document.activeElement !== this.promptBox) return;
+    this.openEditor({ caret: "end" });
+  }
+
+  /**
+   * The whole still, in a window — the same body, full size. See
+   * `CreatorEditor.openEditor`: a second editor over the same state, because
+   * the face's root is a ComfyUI DOM widget and cannot be re-parented into an
+   * overlay. The arch pill goes with it, so the architecture can be changed
+   * from either place; the sampler row and the stage stay on the node.
+   */
+  openEditor({ caret = null } = {}) {
+    if (this.sheet) return;
+    const editor = new PreStageEditor({
+      state: this.state,
+      onCommit: () => { this.onCommit?.(); this.render(); },
+      archPill: this.archPill,
+    });
+    // See `CreatorEditor.openEditor`: a control in the window that writes
+    // through an owner's callback re-renders the *face*, so the face redraws
+    // the window or it draws a stale answer to a click that worked.
+    this.sheetEditor = editor;
+    this.sheet = openEditorSheet({
+      title: t("Still"),
+      subtitle: t("Prompt, init image, style references and LoRAs. The sampler stays on the node."),
+      content: [editor.root],
+      onClose: () => {
+        this.sheet = null;
+        this.sheetEditor = null;
+        this.overflowWaived = this.overflowing;
+        this.render();
+      },
+    });
+    editor.promptBox.focus();
+    if (caret === "end") {
+      const end = editor.promptBox.value.length;
+      editor.promptBox.setSelectionRange?.(end, end);
+    }
   }
 
   renderRail() {

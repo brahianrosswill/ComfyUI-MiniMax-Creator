@@ -671,7 +671,7 @@ expect_error("a feather wider than the clip affords",
 expect_error("errors name the segment",
              lambda: timeline([segment(), segment(**{"duration_s": 6, "checkpoint": "nope"})]),
              "segment 2")
-expect_error("an empty timeline", lambda: timeline([]), "at least one segment")
+expect_error("an empty timeline", lambda: timeline([]), "nothing on it")
 expect_error("too many segments",
              lambda: timeline([segment()] * (compiler.MAX_SEGMENTS + 1)),
              "at most")

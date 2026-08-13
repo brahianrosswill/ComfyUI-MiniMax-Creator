@@ -762,7 +762,14 @@ export function emptyTimeline() {
     // The turbo switch. Global like the LoRA it engages: a speed-up belongs to
     // the run, not to shot 3.
     turbo: emptyTurbo(),
-    segments: [emptySegment()],
+    // Empty, and it is the point: a new timeline is a strip with nothing on it
+    // and two ways to start it. An opening card would have to be a shot — there
+    // is nothing else a default could be — and that card was undeletable while
+    // it was the only one, so every piece began with a generation whether or
+    // not it was meant to. `compile.timeline_segments` refuses an empty strip
+    // at queue time, which is the right moment: an empty strip is a piece being
+    // written, not a piece that is wrong.
+    segments: [],
   };
 }
 
@@ -894,8 +901,10 @@ export function parseTimeline(raw) {
       timeline.refine_denoise = clampRefineDenoise(timeline.refine_denoise);
       timeline.models = parseModels(timeline.models);
       timeline.turbo = parseTurbo(timeline.turbo);
+      // No card is invented for a blob that has none: a fresh node's widget is
+      // "{}" and the strip it opens is empty on purpose — see `emptyTimeline`.
       const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
-      timeline.segments = (segments.length ? segments : [{}]).map((raw) => {
+      timeline.segments = segments.map((raw) => {
         // A clip card holds none of a generation's machinery — no prompt, no
         // assets, no LoRAs — so it is read on its own terms rather than through
         // `parseState`, which would fill it with fields that mean nothing here.
