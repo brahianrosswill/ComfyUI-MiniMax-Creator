@@ -138,6 +138,12 @@ export const css = `
 .mmc-refined-seen {
   padding: 8px 12px; border-left: 2px solid var(--mmc-line);
   white-space: pre-wrap; user-select: text;
+  /* The one unbounded readout in here — every box beside it is a textarea with
+     a row count. A long account scrolls rather than growing the panel, and the
+     cap is in pixels on a node face for the reason .mmc-prompt's is: vh is the
+     screen's height, and what has to hold this is a rectangle on a graph. */
+  max-height: 160px; overflow-y: auto;
 }
+.mmc-editor-sheet-body .mmc-refined-seen, .mmc-tl-modal .mmc-refined-seen { max-height: 30vh; }
 
 `;

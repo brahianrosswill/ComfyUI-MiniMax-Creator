@@ -13,6 +13,10 @@ export const css = `
   color: var(--mmc-text); font-family: inherit; font-size: 14px; line-height: 1.5;
   padding: 14px 16px; outline: none;
 }
+/* In the window it has the room, so it takes a paragraph's worth of it — the
+   window scrolls around it rather than the box stretching to whatever is in it,
+   which is the same bargain the Creator's box takes there. */
+.mmc-editor-sheet-body .mmc-prestage-prompt { min-height: 40vh; }
 .mmc-prestage-prompt:focus { border-color: rgba(255,255,255,.2); }
 .mmc-prestage-prompt::placeholder { color: var(--mmc-off); }
 

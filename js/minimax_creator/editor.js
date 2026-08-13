@@ -11,13 +11,13 @@
 // contenteditable destroys the caret, and attaching an asset from the @ menu
 // commits *while the user is typing in it*.
 
-import { el, icon, ICONS, svg } from "./dom.js";
+import { el, icon, ICONS, keepScroll, svg } from "./dom.js";
 import { t } from "./i18n.js";
 import { openPicker } from "./picker.js";
 import { openLoras } from "./loras.js";
 import { openSettings } from "./settings.js";
 import { openTrim, trimLabel } from "./trim.js";
-import { PromptBox } from "./prompt.js";
+import { PromptBox, focusEnd, openEditorSheet } from "./prompt.js";
 import { RefinePanel, refineButton, refine } from "./refine.js";
 import { openAspectPopover, openResolutionPopover, aspectGlyph, PILL_GLYPH } from "./pills.js";
 import { samplingBar } from "./sampling.js";
@@ -85,6 +85,9 @@ export class CreatorEditor {
    * @param {boolean} [options.settingsTool]  false where the settings page has
    *   nothing to say about what this body makes. It holds the video rate
    *   control, and a pre-stage writes PNGs.
+   * @param {string} [options.editorTitle]  what to call the window the face's
+   *   prompt opens — "Shot" for a clip, "Still" for a pre-stage. Node bodies
+   *   only: in a modal the body is already the window.
    * @param {Stage} [options.stage]  a stage to use instead of building one.
    *   Supplied by an owner that outlives this editor — the pre-stage rebuilds
    *   its body when the architecture changes, and the satellite floating the
@@ -95,7 +98,11 @@ export class CreatorEditor {
                 samplingWidgets = null, onWidgetChange = null, nodeId = null,
                 routeOf = null, setRoute = null, preStage = null,
                 durationPill = true, extraPills = null, extraTools = null,
-                settingsTool = true, stage = null }) {
+                settingsTool = true, stage = null, editorTitle = null }) {
+    // What the window this body opens into is called. A node face is a preview
+    // of one generation, and the window is that generation — so the owner names
+    // it for what it makes rather than for the control that opened it.
+    this.editorTitle = editorTitle ?? t("Shot");
     this.preStage = preStage;
     this.durationPill = durationPill;
     this.settingsTool = settingsTool;
@@ -134,7 +141,10 @@ export class CreatorEditor {
       // `syncTimeline` mirrors it on as `pool`, the way the canvas rides on.
       // Citable by chip, never attached: the citation is the attachment.
       getPool: () => this.state.pool ?? [],
+      onOverflow: (over) => this.onPromptOverflow(over),
     });
+    // Leaving the box arms the escalation again — see `onPromptOverflow`.
+    this.prompt.root.addEventListener("blur", () => { this.overflowWaived = false; });
 
     // Built once and refreshed in place: it holds textareas that are typed into,
     // and a full render would rebuild the one under the caret. `onRefined`
@@ -171,13 +181,26 @@ export class CreatorEditor {
     // editor — so `destroy` leaves it alone.
     this.ownsStage = !stage;
 
+    // The box is on the face, and typed into there, exactly as it always was.
+    // What is new is only what happens when it runs out of room: a node is a
+    // fixed rectangle on a graph, so past a certain length the box is a
+    // four-line slot you are writing a paragraph into — and at that point the
+    // window takes over. See `onPromptOverflow`.
+    //
+    // `onFace` is what tells the two apart: the same editor is also *inside*
+    // that window, and there it is the window, so nothing about it escalates.
+    this.onFace = !!this.nodeId;
+    this.expandHost = el("div", { class: "mmc-panel-corner" });
     this.root = el("div", { class: "mmc-root" }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
       // `frame`, not `root`: the box brings its own disclosure, which folds it
       // away once a rewrite is what gets queued.
-      el("div", { class: "mmc-panel" }, [this.prompt.frame, this.refinePanel.root, this.pillsHost]),
+      el("div", { class: "mmc-panel" }, [
+        ...(this.onFace ? [this.expandHost] : []),
+        this.prompt.frame, this.refinePanel.root, this.pillsHost,
+      ]),
       this.noticeHost,
       this.samplingHost,
     ]);
@@ -514,7 +537,124 @@ export class CreatorEditor {
     this.prompt.refresh();
     this.syncPrompt();
     this.refinePanel.render();
+    this.renderExpand();
     this.renderNotices();
+    // The window over the same state, if one is open. Render, never commit —
+    // this is the end of the chain, not another link in it.
+    this.sheetEditor?.render();
+  }
+
+  /**
+   * The way out of a box that has run out of room.
+   *
+   * Always there, so the window is never something you have to discover by
+   * overflowing into it, and lit once the text no longer fits — at which point
+   * it is not a shortcut any more, it is where the writing is.
+   */
+  renderExpand() {
+    if (!this.onFace) return;
+    this.expandHost.replaceChildren(el("button", {
+      class: `mmc-expand${this.overflowing ? " on" : ""}`,
+      title: this.overflowing
+        ? t("This prompt is longer than the node can show. Open it in a window.")
+        : t("Open this shot in a window — the prompt, its references, LoRAs and canvas."),
+      onclick: () => this.openEditor({ caret: "end" }),
+    }, [icon("expand", 14)]));
+  }
+
+  /**
+   * The text stopped fitting the box, or started fitting it again.
+   *
+   * A node face is a fixed rectangle, so there is a length past which the box
+   * on it is a slot you are writing a paragraph through. When that happens
+   * *while you are typing*, the window opens and takes the caret with it — the
+   * sentence carries on where it left off, in a box the size of the job.
+   *
+   * It happens once. Close the window and the face will not grab the caret
+   * again for the sentence you go back to writing, so a prompt you deliberately
+   * left long is a prompt you can keep editing on the face, scrolled, exactly as
+   * any other overlong box in this pack behaves. The corner control is the way
+   * back in, and it stays lit.
+   *
+   * The waiver is about that visit to the box and not about the text: it lifts
+   * when the box has fitted again *or* when you leave it (see the blur above).
+   * Latched on the text it never lifted at all — a prompt long enough to need
+   * the window is a prompt that stays long, so after one close the face was the
+   * only place it could ever be written again, and the feature read as broken.
+   */
+  onPromptOverflow(over) {
+    if (!this.onFace || over === this.overflowing) return;
+    this.overflowing = over;
+    this.renderExpand();
+    if (!over) {
+      this.overflowWaived = false;
+      return;
+    }
+    if (this.sheet || this.overflowWaived) return;
+    // Only mid-sentence: a state loaded from a workflow overflows the moment it
+    // is drawn, and opening a window over a graph nobody has touched yet would
+    // be the node shouting at the room.
+    if (document.activeElement !== this.prompt.root) return;
+    this.openEditor({ caret: "end" });
+  }
+
+  /**
+   * The whole shot, in a window: the same editor, in a room the size of the job.
+   *
+   * Not a prompt box on its own. Writing a shot is choosing its references and
+   * its length and its canvas as much as it is typing a sentence, and those
+   * controls were never the problem — the *node face* was, because it is a
+   * rectangle on a graph and everything in it has to stay one height. So the
+   * face keeps the rail, the chips and the pills as a preview of the shot, and
+   * this opens the same body full size with the live box in it.
+   *
+   * A second editor over the same state object rather than the face's own
+   * moved into the overlay: the face's root is a ComfyUI DOM widget, and the
+   * frontend goes on positioning it against the node whatever it is parented
+   * to. Both editors mutate one state and commit through this one, so there is
+   * nothing to keep in step — it is the same arrangement a timeline segment's
+   * editor has always used.
+   */
+  openEditor({ caret = null } = {}) {
+    if (this.sheet) return;
+    const editor = new CreatorEditor({
+      state: this.state,
+      onCommit: () => { this.onCommit?.(); this.render(); },
+      canvasPills: this.canvasPills,
+      durationPill: this.durationPill,
+      extraPills: this.extraPills,
+      extraTools: this.extraTools,
+      settingsTool: this.settingsTool,
+      refineTarget: this.refineTarget,
+      onRefined: this.onRefined,
+      onReverted: this.onReverted,
+      routeOf: this.routeOf,
+      setRoute: this.setRoute,
+      // No nodeId: the sampler row, the weights pill and the stage belong to
+      // the node and stay on its face. What is in here is the generation.
+    });
+    // Held so the face can redraw it. Every control in the window whose write
+    // goes through a callback the *owner* supplied — the route badge is the one
+    // that showed it — lands on the node's own editor and re-renders that one;
+    // without this the window goes on drawing what it drew before the click and
+    // reads as a dead control.
+    this.sheetEditor = editor;
+    this.sheet = openEditorSheet({
+      title: this.editorTitle,
+      subtitle: t("Prompt, references, LoRAs and canvas. The sampler stays on the node."),
+      content: [editor.root],
+      onClose: () => {
+        this.sheet = null;
+        this.sheetEditor = null;
+        editor.destroy();
+        // The face is about to show a box the text still does not fit. It is
+        // not to grab the caret again for it — see `onPromptOverflow`.
+        this.overflowWaived = this.overflowing;
+        this.render();
+      },
+    });
+    if (caret === "end") focusEnd(editor.prompt.root);
+    else editor.prompt.root.focus();
   }
 
   /**
@@ -723,7 +863,9 @@ export class CreatorEditor {
       }, parts);
     };
 
-    return el("div", { class: "mmc-assets" }, this.state.assets.map(chip));
+    // Bounded on the face (see the stylesheet), so it needs the wheel the way
+    // the prompt box does — otherwise the row that scrolls zooms the canvas.
+    return keepScroll(el("div", { class: "mmc-assets" }, this.state.assets.map(chip)));
   }
 
   renderPills(geometry, currentMode) {

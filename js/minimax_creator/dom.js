@@ -86,6 +86,12 @@ export const ICONS = {
   // package's 1.6 like every other icon — matching its neighbours matters more
   // than matching its origin.
   brain: `<path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/>`,
+  // Writing, as against bringing: the two ways a timeline card can exist. Drawn
+  // for the empty strip's choices, where "a shot you write" needed a glyph that
+  // was not another rectangle.
+  pen: `<path d="M4 20l4.6-1.1 9.6-9.6a2.1 2.1 0 10-3-3L5.6 15.9z"/><path d="M14.4 5.6l4 4"/>`,
+  // Out of the box and into the window: the corner control on a node face.
+  expand: `<path d="M14 4h6v6"/><path d="M20 4l-7 7"/><path d="M10 20H4v-6"/><path d="M4 20l7-7"/>`,
   chevron: `<path d="M6 9l6 6 6-6"/>`,
   star: `<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.1 5.9-.9z"/>`,
   folder: `<path d="M3 7.5A2.5 2.5 0 015.5 5h3.8l2 2.2h7.2A2.5 2.5 0 0121 9.7v6.8a2.5 2.5 0 01-2.5 2.5h-13A2.5 2.5 0 013 16.5z"/>`,
@@ -113,6 +119,32 @@ export function icon(name, size = 22) {
  */
 export function floatAbove(node) {
   node.style.zIndex = String(1400 + document.querySelectorAll(".mmc-overlay").length * 10 + 5);
+}
+
+/**
+ * Let a box inside a node body scroll instead of zooming the graph.
+ *
+ * A wheel over a node body is the canvas's zoom gesture, and a DOM widget that
+ * merely *has* an overflow does not take it back — so a long prompt was a box
+ * you could not read: the text scrolled nowhere and ComfyUI zoomed out under
+ * the pointer. This scrolls the element itself and swallows the event, but only
+ * while the element has somewhere to go: at either end, and in a box short
+ * enough not to overflow at all, the wheel is the canvas's again and zoom keeps
+ * working exactly where nothing would have scrolled anyway.
+ *
+ * Not passive — the whole point is `preventDefault`.
+ */
+export function keepScroll(element) {
+  element.addEventListener("wheel", (event) => {
+    const room = element.scrollHeight - element.clientHeight;
+    if (room <= 0) return;
+    const next = Math.max(0, Math.min(room, element.scrollTop + event.deltaY));
+    if (next === element.scrollTop) return;
+    element.scrollTop = next;
+    event.preventDefault();
+    event.stopPropagation();
+  }, { passive: false });
+  return element;
 }
 
 /** Close-on-outside-click / Escape, shared by every popover. */

@@ -153,13 +153,14 @@ kinds = by_class(graph)
 check("expansion exports no links", out.result, ())
 
 # One generation is one of everything, and none of the chaining machinery: a
-# Creator render has no seam, so a last-frame, audio-tail or join node in here
-# would be a node that can never do anything.
+# Creator render has no seam, so a last-frame or audio-tail node in here would
+# be a node that can never do anything. It still makes a reel — of one pass,
+# which is the same shape the save node takes from a strip.
 check("one segment node", len(kinds["MiniMaxH3TimelineSegment"]), 1)
 check("one sampler", len(kinds["KSampler"]), 1)
-check("one video decode", len(kinds["VAEDecode"]), 1)
-check("one audio decode", len(kinds["VAEDecodeAudio"]), 1)
-for absent in ("MiniMaxH3LastFrame", "MiniMaxH3AudioTail", "MiniMaxH3TimelineJoin"):
+check("one reel node, which is where the decode happens", len(kinds["MiniMaxH3Reel"]), 1)
+check("...so nothing decodes into the graph", "VAEDecode" in kinds, False)
+for absent in ("MiniMaxH3PassFrames", "MiniMaxH3PassAudio"):
     check(f"no {absent} in a single render", absent in kinds, False)
 
 # ---- the loaders ------------------------------------------------------------
@@ -198,10 +199,10 @@ check("the checkpoint nothing routes to is not wired either",
 for socket in ("vae", "audio_vae"):
     check(f"the encoder is handed no {socket!r} on a text-only render",
           socket in segment_inputs, False)
-check("the video decode still reads the video VAE loader",
-      graph[kinds["VAEDecode"][0][1]["vae"][0]]["class_type"], "VAELoader")
-check("the audio decode still reads the audio VAE loader",
-      graph[kinds["VAEDecodeAudio"][0][1]["vae"][0]]["class_type"], "VAELoader")
+check("the reel node still reads the video VAE loader to decode with",
+      graph[kinds["MiniMaxH3Reel"][0][1]["vae"][0]]["class_type"], "VAELoader")
+check("...and the audio one",
+      graph[kinds["MiniMaxH3Reel"][0][1]["audio_vae"][0]]["class_type"], "VAELoader")
 
 # ---- the tail ---------------------------------------------------------------
 #
@@ -214,13 +215,13 @@ check("one save node", len(kinds["MiniMaxH3Save"]), 1)
 save_id, save_inputs = kinds["MiniMaxH3Save"][0]
 check("it is reported against the node that built it",
       graph[save_id].get("override_display_id"), NODE_ID)
-check("it saves the decoded picture",
-      graph[save_inputs["images"][0]]["class_type"], "VAEDecode")
-check("...and the decoded sound",
-      graph[save_inputs["audio"][0]]["class_type"], "VAEDecodeAudio")
-check("both decode the same sampler",
-      graph[save_inputs["images"][0]]["inputs"]["samples"][0],
-      graph[save_inputs["audio"][0]]["inputs"]["samples"][0])
+check("it saves a reel", graph[save_inputs["reel"][0]]["class_type"], "MiniMaxH3Reel")
+reel_inputs = graph[save_inputs["reel"][0]]["inputs"]
+check("the reel decodes the sampler's own latent",
+      graph[reel_inputs["samples"][0]]["class_type"], "KSampler")
+check("...and writes it out untrimmed, there being no seam to share",
+      [k for k in reel_inputs if k in ("head", "tail")], [])
+check("one pass has nothing in front of it on the reel", "reel" in reel_inputs, False)
 check("at the rate the frame count was snapped to", save_inputs["fps"], 24.0)
 # Read once, here, and carried into the graph as an input — a save node that
 # read the preference itself would be a cache hit on a re-queue and would keep
@@ -724,10 +725,9 @@ pinned = [json.loads(i["segment_data"]) for _, i in hires_kinds["MiniMaxH3Timeli
 check("exactly the refine segment is pinned, to the target canvas",
       [(p["canvas"]["width"], p["canvas"]["height"]) for p in pinned], [TARGET])
 
-for decode in ("VAEDecode", "VAEDecodeAudio"):
-    check(f"{decode} reads the refined latent",
-          hires_graph[hires_kinds[decode][0][1]["samples"][0]]["class_type"],
-          "MiniMaxH3RefinePass")
+check("the reel decodes the refined latent, not the first pass's",
+      hires_graph[hires_kinds["MiniMaxH3Reel"][0][1]["samples"][0]]["class_type"],
+      "MiniMaxH3RefinePass")
 
 direct_kinds = by_class(build(data=json.dumps(
     {**json.loads(DATA), "short_edge": 1152, "upscale": "direct"})).expand)

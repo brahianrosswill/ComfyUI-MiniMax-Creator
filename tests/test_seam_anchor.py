@@ -124,8 +124,8 @@ def encode(compiled, tail_frames=64):
     """What the segment node hands the encoder, for this compiled seam.
 
     The soundtrack is exactly `compiled.audio_tail_s` long because that is what
-    the graph wires: `render.emit` passes that number to the AudioTail node, so
-    the encoder never sees more sound than compile decided on.
+    the graph wires: `render.emit` passes that number to the pass-audio node,
+    so the encoder never sees more sound than compile decided on.
     """
     clip, vae = Clip(), Vae()
     samples = max(1, round(compiled.audio_tail_s * AudioVae.audio_sample_rate))
@@ -142,8 +142,10 @@ def placed(values):
     """The repositioned layout, plus where the clip's own first frame sits."""
     keyframes = values.get("minimax_keyframes") or []
     refs = values.get("minimax_refs") or []
-    layout = PackedLayout(TEXT_LEN, 8, 4, 4, 12, keyframes=keyframes, refs=refs,
-                          frame_count=values.get("minimax_frame_count"))
+    # No `frame_count`: core took one until 2026-08-13, to work out where its
+    # only other legal anchor — the last frame — sat. It now anchors a keyframe
+    # at any index off `resolved_frame_index`, so the argument is gone.
+    layout = PackedLayout(TEXT_LEN, 8, 4, 4, 12, keyframes=keyframes, refs=refs)
     repair._reposition(layout, {"keyframes": keyframes, "refs": refs})
     return layout, repair._target_origin(layout)
 

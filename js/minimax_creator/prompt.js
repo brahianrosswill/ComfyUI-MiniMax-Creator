@@ -11,13 +11,57 @@
 // getValue() is a simple walk and round-trips exactly with what compile.py
 // parses.
 
-import { el, floatAbove, icon } from "./dom.js";
+import { el, floatAbove, icon, keepScroll, mountOverlay } from "./dom.js";
 import { t } from "./i18n.js";
 import { listAssets, viewUrl } from "./api.js";
 import { tagIndex } from "./state.js";
 
 const TRIGGER = /@([\w-]*)$/;
 const MAX_SUGGESTIONS = 40;
+
+/**
+ * The window a node face opens: one overlay, whatever the caller puts in it.
+ *
+ * It holds a whole node body — `CreatorEditor.openEditor` and
+ * `PreStageEditor.openEditor` both build a second editor over the same state
+ * and hand it here. So this knows nothing about prompts: it is a titled
+ * overlay with a close, and the body inside it is the same body the face is.
+ *
+ * @returns {() => void} close it from outside
+ */
+export function openEditorSheet({ title, subtitle = "", content, onClose }) {
+  const close = () => {
+    unmount();
+    onClose?.();
+  };
+  const overlay = el("div", {
+    class: "mmc-overlay",
+    onpointerdown: (event) => { if (event.target === overlay) close(); },
+  }, [
+    el("div", { class: "mmc-modal mmc-editor-sheet" }, [
+      el("div", { class: "mmc-modal-head" }, [
+        el("span", { class: "mmc-tab", "aria-selected": "true", text: title }),
+        ...(subtitle ? [el("span", { class: "mmc-editor-sheet-sub", text: subtitle })] : []),
+        el("button", { class: "mmc-close", text: "✕", title: t("Close"), onclick: close }),
+      ]),
+      el("div", { class: "mmc-editor-sheet-body" }, content),
+    ]),
+  ]);
+  const unmount = mountOverlay(overlay, close);
+  return close;
+}
+
+/** Focus a box and put the caret after everything in it — where the writing
+ *  was when the face handed it over. */
+export function focusEnd(element) {
+  element.focus();
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
 
 export class PromptBox {
   /**
@@ -29,6 +73,13 @@ export class PromptBox {
    * @param {()=>object[]} [hooks.getPool]   the piece's reference pool, for a
    *   timeline segment: citable by handle, never attached — writing the chip is
    *   what attaches it at queue time
+   * @param {()=>string} [hooks.attachedLabel]  what to call `getState().assets`
+   *   in the menu. The timeline's global prompt is written against the piece's
+   *   own pool rather than a card's attachments, and "Attached" would name it
+   *   as something it is not.
+   * @param {(over:boolean)=>void} [hooks.onOverflow]  the text stopped fitting
+   *   the box, or started fitting it again. What a node face does about that is
+   *   its own business — see `CreatorEditor.onPromptOverflow`.
    */
   constructor(hooks) {
     this.hooks = hooks;
@@ -49,9 +100,14 @@ export class PromptBox {
     this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 120));
 
     // The graph canvas swallows keys and drags otherwise.
-    for (const name of ["keyup", "pointerdown", "pointerup", "wheel"]) {
+    for (const name of ["keyup", "pointerdown", "pointerup"]) {
       this.root.addEventListener(name, (event) => event.stopPropagation());
     }
+    // The wheel is not just swallowed: a box that has overflowed has to scroll
+    // on it, and stopping the event alone left the text where it was while the
+    // canvas zoomed anyway. See `keepScroll` — it hands the gesture back at
+    // either end of the text, so zooming over a short prompt still works.
+    keepScroll(this.root);
 
     // The box's own disclosure, shown only while a rewrite stands in for it.
     // `frame` is what a caller mounts; `root` stays the editable, because
@@ -87,6 +143,18 @@ export class PromptBox {
     if (this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
     this.syncExcerpt();
+    this.reportOverflow();
+  }
+
+  /** Whether the text has outgrown the box it is in. Measured rather than
+   *  counted: how much fits is the node's height, the font and the wrapping,
+   *  and none of those is a number this could hold. */
+  overflowing() {
+    return this.root.scrollHeight - this.root.clientHeight > 4;
+  }
+
+  reportOverflow() {
+    this.hooks.onOverflow?.(this.overflowing());
   }
 
   /** Text -> [text nodes, chip spans]. Only handles with a live asset — the
@@ -178,6 +246,7 @@ export class PromptBox {
   onEdit() {
     this.hooks.onInput(this.getValue());
     this.syncExcerpt();
+    this.reportOverflow();
     const trigger = this.triggerRange();
     if (trigger) this.openMenu(trigger.query);
     else this.closeMenu();
@@ -394,7 +463,10 @@ export class PromptBox {
     };
 
     if (attached.length) {
-      this.menu.appendChild(el("div", { class: "mmc-mention-head", text: t("Attached") }));
+      this.menu.appendChild(el("div", {
+        class: "mmc-mention-head",
+        text: this.hooks.attachedLabel?.() ?? t("Attached"),
+      }));
       for (const option of attached) this.menu.appendChild(row(option));
     }
     if (pool.length) {

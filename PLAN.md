@@ -48,7 +48,7 @@ for you. Everything else in this package exists to support that one gesture.
 | Default cfg | 1.0 | The released checkpoints are CFG-distilled — guidance is in the weights. Real guidance on top of that burns the picture and doubles the sampling cost. It stays an ordinary widget: a default, not a constraint. |
 | Chained vs one pass | A toggle on the timeline, chained by default | H3's own prompt format is already a shot list with cut times (`[Shot 2] At 00:05.000, the camera cuts to…`), so the same strip of cards reads two ways: one generation each, joined — or one generation whose description holds all of them. One pass has no seam to cross, so continuity, sound and colour carry because they were never broken, and every rough edge below is a property of chaining rather than of the timeline. It is a toggle and not a replacement because chained is still the only way to pass what one context window will hold, and because the two modes lose different things. `compile.single_payload` flattens the timeline into one ordinary request and the graph loop runs once; nothing downstream knows which mode it is in. |
 | What one pass collapses | Merged, or refused where merging would be a guess | A single pass has one mode, one checkpoint, one LoRA stack, one seed and one soundscape. References merge across shots by file — the same face cited in shot 1 and shot 4 is one `<Picture N>`, which is the point — and handles, which are allocated per segment, are rewritten onto the merged pool before labels are assigned. The rest is refused rather than resolved: shots that disagree about the checkpoint or the soundscape, a start frame anywhere but shot 1, an end frame anywhere but the last. Picking a winner between two deliberate settings is the kind of quiet decision this package does not make. |
-| What bounds a timeline | Frames, and a card cap that only catches a corrupt blob | There used to be one number, `MAX_SEGMENTS = 24`, and it claimed to be the work bound: "low enough that a malformed blob does not run for a day". It was never that in either direction, and merging is what made it obvious. A card stopped being a generation, so 24 cards merged end to end is *one* pass — nothing to guard — while 24 unmerged cards of a minute each is 24 generations of 1445 frames, which is exactly the runaway. Cards do not measure work; neither do passes, since a pass is anything from 5 to 1445 frames. Frames do, so `MAX_TIMELINE_FRAMES` (half an hour of finished video) is checked in `timeline_payloads` against `compile.timeline_frames` — counted per pass, because a run of three five-second cards is one 362-frame generation and not three 124-frame ones, and less what each feathered seam re-generates and `SeamTrim` drops. `MAX_SEGMENTS` stays, raised to 240 and demoted to what it always actually was: the bound that stops a garbage list being walked at all. The frontend asks `state.addSegmentRefusal`, which weighs the card that *would* be added and puts the reason in the button's tooltip, so a control goes dead on the click queueing would have refused rather than letting the strip reach a state `compile.py` throws on. What this cost was the assumption that a ten-minute piece is not a real timeline. |
+| What bounds a timeline | Frames, and a card cap that only catches a corrupt blob | There used to be one number, `MAX_SEGMENTS = 24`, and it claimed to be the work bound: "low enough that a malformed blob does not run for a day". It was never that in either direction, and merging is what made it obvious. A card stopped being a generation, so 24 cards merged end to end is *one* pass — nothing to guard — while 24 unmerged cards of a minute each is 24 generations of 1445 frames, which is exactly the runaway. Cards do not measure work; neither do passes, since a pass is anything from 5 to 1445 frames. Frames do, so `MAX_TIMELINE_FRAMES` (half an hour of finished video) is checked in `timeline_payloads` against `compile.timeline_frames` — counted per pass, because a run of three five-second cards is one 362-frame generation and not three 124-frame ones, and less what each feathered seam re-generates and `SeamTrim` drops. `MAX_SEGMENTS` stays, raised to 240 and demoted to what it always actually was: the bound that stops a garbage list being walked at all. The frontend asks `state.addSegmentRefusal`, which weighs the card that *would* be added and puts the reason in the button's tooltip, so a control goes dead on the click queueing would have refused rather than letting the strip reach a state `compile.py` throws on. What this cost was the assumption that a ten-minute piece is not a real timeline. A supplied clip counts at its own length rather than being snapped to the 17n+5 grid — nothing samples it — and it made the bound honest in a second way: the reel is what stopped the finished piece having to exist as one tensor, so `MAX_TIMELINE_FRAMES` is now a statement about length rather than a number that would have run the machine out of memory a long way before reaching it. |
 | What a crowded lane shows | Labels dropped one at a time, then edge code | The node body's lane is proportional and unscrolled, so forty-seven shots are twenty-four pixels each and the labels a five-shot lane wears draw over each other. Three readings out of one markup, picked by `TimelineBody.fitLane` measuring the blocks it actually drew rather than counting them — the same strip is roomy on a wide node and crowded on a narrow one, and a three-second shot beside a twenty is a quarter of its width, so what fits is asked per block. The length goes first (a band drawn to scale is already a picture of the lengths), then the number, and once no block can hold one the row closes into a single band with the numbering moved to an edge row beneath it at a cadence that keeps the numerals clear of each other. In that band the emphasis inverts: a strip whose seams nearly all continue is one unbroken take, so continuing is drawn as the ordinary case and the *hard cut* is the break — marking what every block has in common is marking nothing. Two proportionality bugs fell out of it: a merged pass's border and padding were stealing four pixels a run, and `flex-basis: auto` let a block's own label buy it width, which at this scale was most of a block. |
 | Refining | A button, not a queue-time step | What the DiT actually reads has to be visible *before* five minutes of sampling, not inferable from the result afterwards. A rewrite inside `execute` would also differ between two runs of the same queue, so ComfyUI's cache would miss every time and there would be nothing to hand-correct. Pressing a button puts the rewrite in the blob, where it saves with the workflow, diffs, and can be edited, switched off without being thrown away, or reverted. |
 | What the LLM writes | The prose, and — in a lone generation — where the cuts go | The instruction line, `[Shot N]`, the *written form* of the cut times and the `S.SS` figure are computed by `contextir.py` off the real frame count. So the reply is JSON — one body per shot plus the audio fields — and `compose` assembles it exactly as it assembles a typed prompt. The model never sees a format it could break, and a 7B is enough for what is left. Where the cuts *land* is a separate question, and on the Creator node it is the model's: one card carries one duration and nothing in it divides a clip, so otherwise a twenty-second prompt is one uncut shot exactly like a six-second one. Given the duration the model returns 1..N bodies with the second each starts on (`refine.shot_limit`, one shot per two seconds, capped), and `plan_cuts` makes the numbers monotonic and makes them fit — a shot with no room merges into the one before it rather than being dropped. A timeline keeps the automatic times: its cards *are* the shots, their cuts are the running sum of the durations the user set, and a model second-guessing them would move a cut off the frame the next card starts on. |
@@ -72,6 +72,13 @@ for you. Everything else in this package exists to support that one gesture.
 | Pre-stage hand-off | By file, through chips on the result card | The still saves under `output/minimax/prestage/` and the chips write `sub/name.png [output]` into the peer's blob — the same annotated-path currency the gallery attach uses, so there is one store and no copy. Start/end/reference land under the peer's own capacity and exclusivity rules, refused with the peer's own words. On a timeline the roles land where one pass would put them: start opens shot 1, end closes the last shot. |
 | Queueing both nodes | Comfy's cache, not an ordering | One Queue runs both output nodes, and an untouched pre-stage is a cache hit — its blob and widgets are the key. The hand-off is by file, so there is deliberately no execution edge to get wrong; "queue selected" is the escape hatch for running one alone. |
 | Machine preferences | A settings page, server-side, out of the blob | A workflow says what the piece *is*; how this computer writes it is a different question, and output quality is the first thing on that side of the line. Two people opening the same `.json` should get the same shot without also having to agree on how many megabytes it takes — so the value is not in `creator_data` and not a widget. It cannot go through the frontend's userdata API either, the way the picker's favorites do: the save node reads it while a queued prompt executes, and an execution has no request behind it and therefore no ComfyUI user, so page and node would be reading two different files. One JSON beside `user/`, a GET/POST pair in `server_routes.py`, and `settings.py` as the only thing that knows the path. `render.emit_tail` reads it once and passes it into the save node as an ordinary input — an output node whose inputs are unchanged is a cache hit, so a save node that read the preference itself would keep writing the quality it was built with. `settings.py` decides what is *allowed* (libx264's whole scale, so a hand-edited file is honoured and shown as `Custom`); `settings.js` decides what is *offered* (four points on it, each wearing its real CRF, because the rest of this package shows the exact filename and the exact pixel size under the friendly word). |
+| How the passes become one file | A reel of references, written part by part | They used to be *concatenated*: `MiniMaxH3TimelineJoin` folded them pairwise and the save node was handed the tensor that came out. Every intermediate of a pairwise fold is a node output and ComfyUI keeps node outputs for the whole execution, so the running totals were all alive at once — O(N²) in the length of the piece, and about 81 GB of intermediates on a ten-pass 768p strip on top of the 15 GB of passes. Worse, the default `RAMPressureCache` evicts current-generation entries over 512 MB when memory runs short, and re-running an evicted join means re-running what fed it, which upstream of a join is a KSampler. Nothing about an mp4 needs any of it: a container is written frame by frame, so the passes only have to be reachable in order, never adjacent in memory. `MiniMaxH3Reel` carries a list of references that copies nothing and `mux.py` walks it into one open container, so the peak is the passes themselves and the fold costs a list. Writing the container here rather than through core's `VideoFromComponents` — which takes a single tensor, and so would mean building the very thing this avoids — also retired the CRF version gate, since `save_to` only learned `crf` in ComfyUI 0.29. `MAX_TIMELINE_FRAMES` was never a memory bound (43 200 frames is 535 GB held); this is what starts making it an honest one. |
+| A part's sound against its own picture | Cut or padded to the frame count, per part | Laid end to end, a part whose sound runs 30 ms short does not lose 30 ms — it moves everything after it by 30 ms, and the drift accumulates down the reel. A generated part's two halves are the same span by construction, so this only ever fires on the rounding between a frame count and a sample count, and on a supplied clip with no soundtrack at all, which holds its own time open with silence. |
+| Supplied footage | A card on the strip, not an asset on a card | A reference clip is something a generation *looks at*; footage cut into the piece is part of the finished video. It has a length, a place in the order and a seam on each side of it, which is what a shot has and what an attachment does not — so it is a card, and everything that walks the strip counts it. It compiles to a payload with no request in it: no prompt, no mode, no checkpoint, no LoRAs. It cannot be merged into a pass and cannot make a strip one pass, because there is no generation there to merge into. |
+| What a clip costs | A path and a window, never a tensor | The reel already accepts parts that are not adjacent in memory, so a clip does not have to be decoded into it at all: `mux._write_clip` demuxes, conforms and re-encodes it a frame at a time into the container that is already open, and a five-minute source costs what a five-second one does. Decoding it to hand the encoder something to re-encode would be 12.4 MB a frame — 35 GB for two minutes — to say nothing at all. What the *seams* need out of it is a separate, bounded decode of its own window: one frame at the head, at most 39 at the tail. A clip nothing continues from is never decoded. Conformed through one ffmpeg filter chain (`fps`, then `scale`+`crop`, then `setsar`) because frame-rate conversion and the cover-crop are things it has correct and we would be reinventing; anamorphic sources are scaled by their storage size, which is the one case this gets wrong. |
+| Where the aspect comes from | The first pass's own answer, then the first clip, then the pill | Footage was shot at the size it was shot at, and cropping it to a preference throws away picture that cannot be got back; a ratio pill *is* a preference, so a clip outranks it. It does not outrank a keyframe on segment 1 — that rule already existed and every timeline without footage still follows it, so the order only ever adds a step that used to fall through to the pill. The scale stays the slider's: generated video stops at 896 and is off-distribution past 768, so a 1080p source is played at the render's size and the card says so. `canvas_from_image` is the same call a keyframe goes through, so the clamp and the area cap are the ones that already exist — but `from_image` stays false, because nothing in the generation is being matched to a still and `encode.py` reads that flag to decide whether a keyframe may be stretched onto the canvas or has to be cropped into it. |
+| The seam in front of a clip | The same switches, running the other way | Everywhere else the seam says what the card *after* the cut starts from. A clip is not conditioned on anything, so the only thing a seam there can say is what the card *before* it ends on: the clip's opening frame, and its opening sound. The switches stay where the cut is — the strip draws them there, and moving the clip moves them — and only their sentence changes; what changes underneath is which payload they land on. Mechanically it is an ordinary last-frame keyframe fed from a tensor, so it lands on the same four modes a pair of attached stills does, which also means a shot carrying references cannot have one (FL2VA vs Ref2VA) and the control goes dead naming the shot rather than letting the queue refuse it. |
+| Blending into a clip | The same grid, end-aligned, and it is exact | `_context_keyframes` pins guides at any frame index, so the only question was whether an end-aligned run lands on the VAE's temporal grid. It does, and not by luck: the feather grid is the standalone-encodable runs (17m+5) and a generation is 17n+5 frames, so a run ending on the last frame *begins* at frame 17(n−m) — a whole number of seventeen-frame cycles from the origin, and therefore in phase with the five-step pattern. So the tail blend is the head blend with an offset. The sound crosses with it because `AUDIO_END_KEY` already took any pixel-frame coordinate. What it costs is symmetrical too: the blended run is re-generated and trimmed off the *end* of the generated segment rather than the front of the clip — trimming the clip would edit footage the user chose. |
 | Frame extraction | Client-side, through the trim editor's own scrubbing | `framegrab.js` is the trim editor's canvas + `seeked` + `drawFrame` machinery with a different ending: the playhead frame is painted at the clip's own resolution and uploaded through core's `/upload/image`, landing on an `input/prestage_frames/` shelf. Zero server half. |
 
 ## Phases
@@ -123,6 +130,80 @@ for you. Everything else in this package exists to support that one gesture.
   keep changing — so both are pills (`5f · 2 latent`, `latent 0`) rather than
   constants. The sweep that answered them the first time has been removed.
 
+- [x] **8 — Supplied clips.** A timeline card that is not a generation: footage
+  the user already has, cut into the strip with the seams working on both sides
+  of it.
+
+  The chained path already has the shape for it. Everything downstream of a
+  pass read one currency — the decoded `(images, audio)` pair — so a clip card
+  is a pass that produces one without a sampler in front of it, and the
+  last-frame, audio-tail and feather machinery never asked where a tensor came
+  from. (Phase 9 below changed that currency to a file, and a clip became the
+  second kind of one.) What is new is a card with no request in it, the
+  seam pointing *backwards*, and the memory.
+
+  - [x] **The tail.** `mux.py` and `MiniMaxH3Reel`, replacing the pairwise join.
+    Nothing to do with clips on its own, and the thing that makes the rest
+    affordable — see the decision row. Done first and alone so the change is
+    provable against the existing suite.
+  - [x] **The clip card.** A reel part that names a file, and a payload with no
+    request in it. `MiniMaxH3ClipReel` adds it; `mux._write_clip` splices it.
+    The aspect comes off the first clip — see the decision row.
+  - [x] **The seams, both ways.** `MiniMaxH3ClipFrames` / `MiniMaxH3ClipAudio`
+    read the head or the tail of the clip's own window, so a generation after
+    it continues from it and a generation before it ends on it. Blend and sound
+    work at both ends; the trim grew a `tail`.
+  - [x] **What it refuses, and where.** Merging and one-pass are refused in
+    `timeline_runs` and prevented in `syncTimeline`; the backwards seam is a
+    dead control naming the shot that blocks it; the refiner skips clip cards
+    but is told where they fall.
+
+  **Where the memory actually goes.** Under the reel, a supplied clip never
+  becomes part of the timeline's tensor stream: it owes the seams its first
+  frame and its last blended run, and it owes the file its own packets. That is
+  why the tail was worth doing first — without the reel there was nowhere to
+  put a part that is not a tensor, and a two-minute clip would have been 35 GB.
+
+  **Not done.** The clip is always transcoded, even when it already matches the
+  render's codec and canvas and could be stream-copied — a real optimisation
+  and a second path to get wrong, so it is deliberately absent from the first
+  cut. And the frontend's clip work has no tests of its own; see below.
+
+- [x] **9 — The passes go to disk.** `spill.py`, and the decode moved inside
+  `MiniMaxH3Reel`. The reel took away the *intermediates*; this takes away the
+  passes themselves.
+
+  The reel already meant nothing concatenated, but every pass still had to
+  survive from its own decode until the save node ran, because the file is
+  written from all of them at the end. ComfyUI keeps a node's output for the
+  whole execution, so any node that *returns* a decoded pass holds it: a minute
+  of 768p video is 18 GB of float32 resident at once. On a box streaming a
+  staged model out of host RAM — 40 GB of it, in the report that prompted this
+  — that is an OOM kill after an hour of sampling, on a render that was going
+  to work.
+
+  So the decode happens inside the reel node and the tensors never leave it:
+  `spill.py` writes 8-bit frames and float32 sound straight out, and what
+  travels the wire is a path and a frame count. `mux.py` memmaps the parts back
+  a frame at a time, and a seam reads its own width out of the same file.
+  Peak memory is one pass, whatever the strip is. 8-bit costs the file nothing
+  — it is what the encoder was always given — and it is what a keyframe
+  attached from a PNG has always been.
+
+  What went with it: `MiniMaxH3LastFrame`, `MiniMaxH3AudioTail` and
+  `MiniMaxH3SeamTrim`. All three took tensors that no longer exist as node
+  outputs; `MiniMaxH3PassFrames`, `MiniMaxH3PassAudio` and the reel node's own
+  `head`/`tail` do the same jobs against the spill. A supplied clip is
+  unchanged and now simply the second kind of file part.
+
+  **Not done: the resume this makes possible.** Spills live under ComfyUI's
+  temp, which core wipes on restart, so a crashed render still costs every pass.
+  Naming a spill by a hash of what determines its pixels — payload, sampling,
+  weights, and the key of the pass it continues from — and looking for it in
+  `render.emit` before emitting the sampler would make a re-run skip everything
+  that has not changed. That is a store with a real invalidation problem in it
+  and it wants deciding on its own, not smuggling in behind a memory fix.
+
 ## Known rough edges in a chained timeline
 
 Diagnosed, not yet fixed, and worth knowing before blaming the prompt. All four
@@ -131,7 +212,7 @@ exist in one-pass mode** — which is the strongest argument for the toggle, and
 the reason to reach for it first on anything a single generation can hold.
 
 - **The seam duplicates a frame.** Segment N+1 is conditioned to open on segment
-  N's last frame, and `MiniMaxH3TimelineJoin` keeps both, so every join holds the
+  N's last frame, and the reel keeps both, so every join holds the
   same moment twice. It reads as a hitch. Dropping the first frame of a
   continuing segment is a two-line change but it moves the finished clip's length
   off the sum of the pills, which is a decision, not a cleanup.
@@ -237,4 +318,26 @@ and no ComfyUI. Verify a change to the ordering contract by mutating
 not protecting anything. The same applies to `refine.normalize_handles`, whose
 failure mode is a prompt that still compiles and binds to the wrong tensor.
 
-The reference *encode* path has not yet been run against real weights.
+`tests/test_mux.py` and `tests/test_spill.py` need the ComfyUI venv but no
+install — they load `mux.py` and `spill.py` by path, since writing a container
+and writing a pass need av, torch and numpy and nothing else. `spill.directory`
+is the one thing either wants from ComfyUI, and the harness answers it.
+It writes real reels and reads the mp4 back, because a container written part by
+part fails by *playing wrong* rather than by raising: both halves of `_fit` and
+the running sample cursor were mutated to confirm the suite catches them.
+
+The reference *encode* path has not yet been run against real weights. Neither
+has a clip seam: the graph is built and checked, but what a pinned run of
+somebody else's footage does to a generation's last second is a question for
+the weights.
+
+**The suite needs splitting, and has not been.** `test_compile.py` is ~1500
+lines and four of the graph suites are 550–800, all of them flat scripts
+appending to one `FAILURES` list with a hand-placed `if FAILURES: sys.exit(1)`.
+In four files that block had drifted above later sections, so every assertion
+after it was collected and thrown away — about 130 lines in `test_compile.py`,
+including the whole reference-pool and passes sections, and (briefly) the clip
+sections added here. The report has been moved to the end of each and one stale
+expectation surfaced and was fixed; the class of bug remains available. The fix
+is a small shared harness that reports at exit, so it cannot drift, plus a
+split by concern — deliberately not done mid-feature.
