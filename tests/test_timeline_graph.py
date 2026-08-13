@@ -155,7 +155,7 @@ check("one segment node per segment", len(by_type["MiniMaxH3TimelineSegment"]), 
 check("one sampler per segment", len(by_type["KSampler"]), 3)
 check("one video decode per segment", len(by_type["VAEDecode"]), 3)
 check("one audio decode per segment", len(by_type["VAEDecodeAudio"]), 3)
-check("joins fold pairwise", len(by_type["MiniMaxH3TimelineJoin"]), 2)
+check("one reel node per pass", len(by_type["MiniMaxH3Reel"]), 3)
 # Only segment 2 continues, so only one frame is ever taken off a decode.
 check("a last frame only where one is needed", len(by_type["MiniMaxH3LastFrame"]), 1)
 check("no negative connected means one zero-out per segment",
@@ -214,7 +214,7 @@ check("one loader per checkpoint actually routed to",
 check("one text encoder for the whole chain", len(by_type["CLIPLoader"]), 1)
 check("one loader per VAE", len(by_type["VAELoader"]), 2)
 
-# Nothing comes out of the node: it saves the joined clip itself, and the
+# Nothing comes out of the node: it saves the whole reel itself, and the
 # display-id stamp is what puts the result back on the node the user is looking
 # at rather than on an expanded node nobody can see.
 check("nothing comes out of the node", out.args, ())
@@ -222,14 +222,28 @@ save_id, save_inputs = by_type["MiniMaxH3Save"][0]
 check("one save node", len(by_type["MiniMaxH3Save"]), 1)
 check("it is reported against the node that built it",
       graph[save_id].get("override_display_id"), NODE_ID)
-check("it saves the tail of the join fold",
-      graph[save_inputs["images"][0]]["class_type"], "MiniMaxH3TimelineJoin")
-check("...and takes its sound from the same node",
-      save_inputs["audio"][0], save_inputs["images"][0])
+check("it saves the end of the reel",
+      graph[save_inputs["reel"][0]]["class_type"], "MiniMaxH3Reel")
+
+# The reel is a chain, one node per pass, each holding the one in front of it —
+# and the passes reach it in play order. This is what replaced the pairwise
+# join, and the property worth pinning is that nothing concatenates: every reel
+# node's picture comes straight off its own decode.
+reel_id = save_inputs["reel"][0]
+walked = []
+while reel_id is not None:
+    inputs = graph[reel_id]["inputs"]
+    walked.append(graph[inputs["images"][0]]["class_type"])
+    reel_id = inputs["reel"][0] if "reel" in inputs else None
+check("the reel is one node per pass, decodes all the way down",
+      walked, ["VAEDecode"] * 3)
+check("the first pass opens the reel with nothing in front of it",
+      "reel" in graph[[node_id for node_id, i in by_type["MiniMaxH3Reel"]
+                       if "reel" not in i][0]]["inputs"], False)
 check("it lands in the render folder — the same one a Creator render lands in",
       save_inputs["filename_prefix"], outputs_mod.VIDEO_PREFIX)
 # One prefix for the whole timeline, because a timeline is one file: the
-# segments are joined before the save node, so there is nothing per-segment to
+# passes reach the save node as one reel, so there is nothing per-segment to
 # put anywhere else.
 retargeted = build(json.dumps({**json.loads(DATA), "output_prefix": "film/reel-1"})).expand
 check("a blob's own prefix is used instead",
@@ -370,17 +384,20 @@ for node_id, node in one.expand.items():
 check("one pass expands to one segment node", len(built["MiniMaxH3TimelineSegment"]), 1)
 check("...and one sampler", len(built["KSampler"]), 1)
 check("...on the seed as given, not seed + k", built["KSampler"][0][1]["seed"], 100)
-for gone in ("MiniMaxH3TimelineJoin", "MiniMaxH3LastFrame", "MiniMaxH3AudioTail"):
+for gone in ("MiniMaxH3LastFrame", "MiniMaxH3AudioTail"):
     check(f"no {gone} in a one-pass graph", gone in built, False)
 # One generation, one checkpoint: none of these shots carries a reference, so
 # the reference weights must not be loaded at all.
 check("one pass loads one checkpoint",
       [i["unet_name"] for _, i in built["UNETLoader"]], [MODELS["fl2va"]])
 one_save = built["MiniMaxH3Save"][0][1]
-check("the save reads the decodes straight",
-      (one.expand[one_save["images"][0]]["class_type"],
-       one.expand[one_save["audio"][0]]["class_type"]),
+check("one pass makes a reel of one", len(built["MiniMaxH3Reel"]), 1)
+one_reel = built["MiniMaxH3Reel"][0][1]
+check("the reel reads the decodes straight",
+      (one.expand[one_reel["images"][0]]["class_type"],
+       one.expand[one_reel["audio"][0]]["class_type"]),
       ("VAEDecode", "VAEDecodeAudio"))
+check("...with nothing in front of it", "reel" in one_reel, False)
 
 payload = json.loads(built["MiniMaxH3TimelineSegment"][0][1]["segment_data"])
 check("the whole timeline arrives as one request", sorted(payload),
@@ -411,7 +428,7 @@ for socket in ("vae", "audio_vae"):
 # One segment is the degenerate case: nothing to join, nothing to continue from.
 lone = build(blob(segments=[{"prompt": "x", "duration_s": 6}])).expand
 kinds = [n["class_type"] for n in lone.values()]
-check("a lone segment needs no join", kinds.count("MiniMaxH3TimelineJoin"), 0)
+check("a lone segment makes a reel of one", kinds.count("MiniMaxH3Reel"), 1)
 check("...and no last frame", kinds.count("MiniMaxH3LastFrame"), 0)
 
 # The checkpoint each segment routes to is checked before anything is queued,
@@ -544,12 +561,12 @@ trim_images = feathered[trims[0][1]["images"][0]]
 trim_sampler = feathered[trim_images["inputs"]["samples"][0]]
 check("the trim reads the feathered segment's decode",
       trim_sampler["inputs"]["model"][0], fchain[1][0])
-# ...and both the join and segment 3's seam read the *trimmed* segment 2, so
+# ...and both the reel and segment 3's seam read the *trimmed* segment 2, so
 # the source's tail neither plays twice nor leaks into the next inheritance.
-joins = [i for _, i in fb["MiniMaxH3TimelineJoin"]]
+reels = [i for _, i in fb["MiniMaxH3Reel"]]
 trim_id = trims[0][0]
-check("the join takes the trimmed segment",
-      any(i["images_b"][0] == trim_id for i in joins), True)
+check("the reel takes the trimmed segment",
+      any(i["images"][0] == trim_id for i in reels), True)
 seg3_last_frame = feathered[fchain[2][1]["prev_image"][0]]
 check("the next seam inherits from the trimmed segment",
       seg3_last_frame["inputs"]["image"][0], trim_id)
@@ -671,7 +688,7 @@ for node_id, node in mixed.items():
 
 check("two passes expand to two segment nodes", len(made["MiniMaxH3TimelineSegment"]), 2)
 check("...and two samplers", len(made["KSampler"]), 2)
-check("the seam between the passes survives", len(made["MiniMaxH3TimelineJoin"]), 1)
+check("the two passes reach the reel", len(made["MiniMaxH3Reel"]), 2)
 check("...and takes the first pass's last frame", len(made["MiniMaxH3LastFrame"]), 1)
 
 first, second = (json.loads(i["segment_data"]) for _, i in made["MiniMaxH3TimelineSegment"])

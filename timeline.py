@@ -45,11 +45,16 @@ Two consequences worth knowing before reading further:
 
 import json
 
-import torch
 from comfy_api.latest import io
 
 from . import (accel, canvas, compile as compiler, encode as encoder, lora,
-               media, models, outputs, payload as payload_repair, render, settings)
+               media, models, mux, outputs, payload as payload_repair, render,
+               settings)
+
+# The reel's own socket type. A list of `{"images", "audio"}` in play order —
+# see `MiniMaxH3Reel` for why the passes travel as a list of references rather
+# than as one concatenated clip.
+REEL_TYPE = "MMC_REEL"
 
 DEFAULT_DATA = json.dumps({
     "version": 2,
@@ -497,61 +502,67 @@ class MiniMaxH3SeamTrim(io.ComfyNode):
         )
 
 
-class MiniMaxH3TimelineJoin(io.ComfyNode):
-    """Two segments' picture and sound, end to end.
+class MiniMaxH3Reel(io.ComfyNode):
+    """The passes so far, as a list of what to play — not as one clip.
 
-    Folded pairwise by the Timeline node, so joining N segments is N-1 of these
-    rather than one node with a variable number of inputs.
+    This is what replaced `MiniMaxH3TimelineJoin`, and the difference is the
+    whole reason it exists. The join concatenated: it took two passes and
+    returned the tensor holding both, so folding N passes built N-1 running
+    totals and ComfyUI kept every one of them alive. Ten 768p passes came to
+    about 81 GB of intermediates on top of 15 GB of passes, which is O(N^2) in
+    the length of the piece.
+
+    A reel copies nothing. It carries references to the tensors the decoders
+    already produced, in play order, and `mux.py` walks it writing one frame at
+    a time. So the fold costs a list, the file is written from parts that never
+    have to be adjacent in memory, and the peak is the passes themselves.
+
+    Chained the same way the join was — each reel node takes the one before it —
+    because that keeps the growth an ordinary graph edge with no variadic
+    inputs, and it keeps a pass's cache key naming exactly the passes in front
+    of it.
     """
 
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3TimelineJoin",
-            display_name="MiniMax H3 Timeline Join",
+            node_id="MiniMaxH3Reel",
+            display_name="MiniMax H3 Reel",
             category="MiniMax/internal",
-            description="Concatenates two timeline segments' frames and audio.",
+            description="Adds one pass's frames and sound to the reel the save node writes.",
             is_dev_only=True,
             inputs=[
-                io.Image.Input("images_a"),
-                io.Audio.Input("audio_a"),
-                io.Image.Input("images_b"),
-                io.Audio.Input("audio_b"),
+                io.Image.Input("images"),
+                io.Audio.Input("audio"),
+                io.Custom(REEL_TYPE).Input("reel", optional=True,
+                    tooltip="The passes in front of this one. Absent on the first."),
             ],
-            outputs=[io.Image.Output(display_name="images"), io.Audio.Output(display_name="audio")],
+            outputs=[io.Custom(REEL_TYPE).Output(display_name="reel")],
         )
 
     @classmethod
-    def execute(cls, images_a, audio_a, images_b, audio_b) -> io.NodeOutput:
-        if images_a.shape[1:] != images_b.shape[1:]:
-            # The timeline pins one canvas across every segment precisely so this
-            # cannot happen; if it has, something upstream resized one of them.
-            raise ValueError(
-                f"segments are different sizes and cannot be joined: "
-                f"{images_a.shape[2]}x{images_a.shape[1]} vs {images_b.shape[2]}x{images_b.shape[1]}"
-            )
-        images = torch.cat([images_a, images_b.to(images_a)], dim=0)
-
-        rate_a, rate_b = int(audio_a["sample_rate"]), int(audio_b["sample_rate"])
-        if rate_a != rate_b:
-            raise ValueError(f"segments have different sample rates ({rate_a} vs {rate_b})")
-        wave_a, wave_b = audio_a["waveform"], audio_b["waveform"].to(audio_a["waveform"])
-        if wave_a.shape[:-1] != wave_b.shape[:-1]:
-            raise ValueError(
-                f"segments have different audio shapes ({tuple(wave_a.shape)} vs {tuple(wave_b.shape)})")
-        audio = {"waveform": torch.cat([wave_a, wave_b], dim=-1), "sample_rate": rate_a}
-        return io.NodeOutput(images, audio)
+    def execute(cls, images, audio, reel=None) -> io.NodeOutput:
+        # A new list rather than an append: the reel this was handed is another
+        # node's cached output, and growing it in place would rewrite history
+        # every time a later pass re-ran.
+        return io.NodeOutput([*(reel or []), {"images": images, "audio": audio}])
 
 
 class MiniMaxH3Save(io.ComfyNode):
-    """The last node of every render: picture and sound, muxed and written out.
+    """The last node of every render: the reel, muxed and written out.
 
     Ours rather than core's `CreateVideo` + `SaveVideo` for one mechanical
     reason: `SaveVideo`'s `codec` is a `DynamicCombo`, whose value the frontend
     assembles out of a dynamic schema. A graph built in Python has no frontend,
     so there is nothing to assemble it and the input arrives as a bare string the
-    node then subscripts. This holds the two tensors already and writing the file
-    is core's `VideoFromComponents` either way.
+    node then subscripts.
+
+    It takes a reel rather than one clip's tensors, and `mux.py` writes it part
+    by part — which is what stops a long timeline from having to exist as one
+    concatenated tensor first. That also retired the CRF version gate this node
+    used to carry: `VideoFromComponents.save_to` only learned `crf` in ComfyUI
+    0.29, so a quality setting had to be refused on anything older. Writing the
+    container ourselves, it is always honoured.
 
     It is an output node, and `render.emit_tail` stamps the calling node's id on
     it, so what it saves is reported against the Creator or Timeline the user is
@@ -564,12 +575,11 @@ class MiniMaxH3Save(io.ComfyNode):
             node_id="MiniMaxH3Save",
             display_name="MiniMax H3 Save",
             category="MiniMax/internal",
-            description="Muxes a render's frames and sound into one file under output/.",
+            description="Writes a render's passes into one file under output/.",
             is_dev_only=True,
             is_output_node=True,
             inputs=[
-                io.Image.Input("images"),
-                io.Audio.Input("audio"),
+                io.Custom(REEL_TYPE).Input("reel"),
                 io.Float.Input("fps", default=float(canvas.FPS), min=1.0, max=120.0),
                 io.String.Input("filename_prefix", default="minimax/H3"),
                 # An input rather than a read of `settings.py` here, so that
@@ -585,17 +595,14 @@ class MiniMaxH3Save(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, audio, fps, filename_prefix,
+    def execute(cls, reel, fps, filename_prefix,
                 crf=settings.DEFAULT_CRF) -> io.NodeOutput:
-        import inspect
         import os
-        from fractions import Fraction
 
         import folder_paths
         from comfy.cli_args import args
-        from comfy_api.latest import InputImpl, Types
 
-        height, width = int(images.shape[1]), int(images.shape[2])
+        width, height = mux.reel_geometry(reel)
         directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory(), width, height)
 
@@ -609,27 +616,9 @@ class MiniMaxH3Save(io.ComfyNode):
                 collected["prompt"] = cls.hidden.prompt
             metadata = collected or None
 
-        video = InputImpl.VideoFromComponents(Types.VideoComponents(
-            images=images, audio=audio, frame_rate=Fraction(round(float(fps)))))
         filename = f"{name}_{counter:05}_.mp4"
-        # `crf` reached core's video writer in ComfyUI 0.29. On anything older
-        # the argument does not exist, and dropping it would mean a file that
-        # does not have the quality the settings page says is set — so it is
-        # only dropped when it is the value libx264 would have chosen anyway,
-        # and refused loudly otherwise.
-        quality = {"crf": float(crf)}
-        if "crf" not in inspect.signature(video.save_to).parameters:
-            if int(crf) != settings.DEFAULT_CRF:
-                raise RuntimeError(
-                    f"Output quality (crf {int(crf)}) needs ComfyUI 0.29 or newer — "
-                    f"this one can only write libx264's default of {settings.DEFAULT_CRF}. "
-                    "Update ComfyUI, or set the quality back to Standard.")
-            quality = {}
-        video.save_to(os.path.join(directory, filename),
-                      format=Types.VideoContainer.MP4,
-                      codec=Types.VideoCodec.H264,
-                      metadata=metadata,
-                      **quality)
+        mux.write(os.path.join(directory, filename), reel,
+                  fps=float(fps), crf=int(crf), metadata=metadata)
 
         # Not `ui.PreviewVideo`: that reports under "images", the key the stock
         # frontend preview keys on — and with the caller's id stamped on this
@@ -644,5 +633,5 @@ class MiniMaxH3Save(io.ComfyNode):
 # Registered by `creator_node.MiniMaxCreatorExtension` — one extension for the
 # package, so there is one place that says what this node pack contains.
 NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3LastFrame,
-         MiniMaxH3SeamTrim, MiniMaxH3AudioTail, MiniMaxH3TimelineJoin,
+         MiniMaxH3SeamTrim, MiniMaxH3AudioTail, MiniMaxH3Reel,
          MiniMaxH3Save]

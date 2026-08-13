@@ -153,13 +153,15 @@ kinds = by_class(graph)
 check("expansion exports no links", out.result, ())
 
 # One generation is one of everything, and none of the chaining machinery: a
-# Creator render has no seam, so a last-frame, audio-tail or join node in here
-# would be a node that can never do anything.
+# Creator render has no seam, so a last-frame or audio-tail node in here would
+# be a node that can never do anything. It still makes a reel — of one pass,
+# which is the same shape the save node takes from a strip.
 check("one segment node", len(kinds["MiniMaxH3TimelineSegment"]), 1)
 check("one sampler", len(kinds["KSampler"]), 1)
 check("one video decode", len(kinds["VAEDecode"]), 1)
 check("one audio decode", len(kinds["VAEDecodeAudio"]), 1)
-for absent in ("MiniMaxH3LastFrame", "MiniMaxH3AudioTail", "MiniMaxH3TimelineJoin"):
+check("one reel node", len(kinds["MiniMaxH3Reel"]), 1)
+for absent in ("MiniMaxH3LastFrame", "MiniMaxH3AudioTail"):
     check(f"no {absent} in a single render", absent in kinds, False)
 
 # ---- the loaders ------------------------------------------------------------
@@ -214,13 +216,16 @@ check("one save node", len(kinds["MiniMaxH3Save"]), 1)
 save_id, save_inputs = kinds["MiniMaxH3Save"][0]
 check("it is reported against the node that built it",
       graph[save_id].get("override_display_id"), NODE_ID)
-check("it saves the decoded picture",
-      graph[save_inputs["images"][0]]["class_type"], "VAEDecode")
+check("it saves a reel", graph[save_inputs["reel"][0]]["class_type"], "MiniMaxH3Reel")
+reel_inputs = graph[save_inputs["reel"][0]]["inputs"]
+check("the reel holds the decoded picture",
+      graph[reel_inputs["images"][0]]["class_type"], "VAEDecode")
 check("...and the decoded sound",
-      graph[save_inputs["audio"][0]]["class_type"], "VAEDecodeAudio")
+      graph[reel_inputs["audio"][0]]["class_type"], "VAEDecodeAudio")
 check("both decode the same sampler",
-      graph[save_inputs["images"][0]]["inputs"]["samples"][0],
-      graph[save_inputs["audio"][0]]["inputs"]["samples"][0])
+      graph[reel_inputs["images"][0]]["inputs"]["samples"][0],
+      graph[reel_inputs["audio"][0]]["inputs"]["samples"][0])
+check("one pass has nothing in front of it on the reel", "reel" in reel_inputs, False)
 check("at the rate the frame count was snapped to", save_inputs["fps"], 24.0)
 # Read once, here, and carried into the graph as an input — a save node that
 # read the preference itself would be a cache hit on a re-queue and would keep

@@ -6,18 +6,24 @@ ComfyUI has no way to say that except by returning a subgraph. So both compile
 their blob to payloads and hand them here, and this emits
 
     loaders -> segment -> [accelerators] -> [preview] -> KSampler
-            -> VAEDecode + VAEDecodeAudio -> CreateVideo -> SaveVideo
+            -> VAEDecode + VAEDecodeAudio -> Reel -> Save
 
-once per payload, joining them end to end. The Creator passes one payload and
-the Timeline passes one per segment; a single-payload render is the same code
-with the loop running once, which is why there is no second implementation of it
-and must not be. Everything the two nodes disagree about — how the blob becomes
-payloads, what the widgets are called — stays in the nodes.
+once per payload, adding each to the reel the save node writes. The Creator
+passes one payload and the Timeline passes one per segment; a single-payload
+render is the same code with the loop running once, which is why there is no
+second implementation of it and must not be. Everything the two nodes disagree
+about — how the blob becomes payloads, what the widgets are called — stays in
+the nodes.
 
 The chaining is the only part a one-payload render does not exercise: segment N
-starting from segment N-1's decoded last frame, and the pairwise join that
-concatenates them. Both are driven off the compiled payload rather than off a
-flag, so a Creator render simply never asks for them.
+starting from segment N-1's decoded last frame. It is driven off the compiled
+payload rather than off a flag, so a Creator render simply never asks for it.
+
+**The passes are collected, not concatenated.** They used to be folded pairwise
+by a join node, which meant N-1 running totals all held alive by the executor's
+cache — O(N^2) in the length of the piece, and 81 GB of intermediates on a
+ten-pass 768p strip. A reel is a list of references that copies nothing, and
+`mux.py` writes the file from it one frame at a time.
 
 **Both ends of that chain used to be the user's problem.** The loaders were five
 sockets on the node and the video was two outputs somebody had to wire a save
@@ -52,7 +58,7 @@ REFINE_NODE = "MiniMaxH3RefinePass"
 LAST_FRAME_NODE = "MiniMaxH3LastFrame"
 AUDIO_TAIL_NODE = "MiniMaxH3AudioTail"
 TRIM_NODE = "MiniMaxH3SeamTrim"
-JOIN_NODE = "MiniMaxH3TimelineJoin"
+REEL_NODE = "MiniMaxH3Reel"
 SAVE_NODE = "MiniMaxH3Save"
 
 # Where a render lands when the blob does not say. Under a folder of its own,
@@ -164,7 +170,7 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
 
     graph = GraphBuilder()
     links = models.emit_links(graph, weights, set(where))
-    joined = None           # (images, audio) for everything emitted so far
+    reel = None             # the reel link holding every pass emitted so far
     decoded = []            # every payload's decoded (images, audio), in order —
                             # a seam defaults to the previous one but may name
                             # any earlier segment via the payload's continue_from
@@ -289,22 +295,20 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             images, audio = trimmed.out(0), trimmed.out(1)
         decoded.append((images, audio))
 
-        if joined is None:
-            joined = (images, audio)
-        else:
-            # Folded pairwise rather than gathered into one variadic node, so the
-            # join needs no dynamic inputs and works for any payload count.
-            pair = graph.node(JOIN_NODE,
-                              images_a=joined[0], audio_a=joined[1],
-                              images_b=images, audio_b=audio)
-            joined = (pair.out(0), pair.out(1))
+        # Added to the reel rather than concatenated onto what came before.
+        # Chained the same way the old pairwise join was — one node per pass,
+        # each taking the one in front of it — but what travels the wire is a
+        # list of references, so the passes are never adjacent in memory and
+        # nothing here holds a running total. See `MiniMaxH3Reel`.
+        reel = graph.node(REEL_NODE, images=images, audio=audio,
+                          **({"reel": reel} if reel is not None else {})).out(0)
 
-    emit_tail(graph, joined[0], joined[1], unique_id, filename_prefix)
+    emit_tail(graph, reel, unique_id, filename_prefix)
     return graph
 
 
-def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
-    """Mux the frames and the sound into a file, and report it against `unique_id`.
+def emit_tail(graph, reel, unique_id, filename_prefix=FILENAME_PREFIX):
+    """Write the reel to a file, and report it against `unique_id`.
 
     H3 generates picture and sound together and they should leave together, which
     used to mean wiring both outputs into somebody else's save node and getting
@@ -314,8 +318,8 @@ def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
     `MiniMaxH3Save` rather than core's `CreateVideo` + `SaveVideo`: `SaveVideo`'s
     `codec` is a `DynamicCombo`, whose value is assembled from the frontend's
     dynamic schema rather than being the plain string it looks like, and a
-    built graph has no frontend to assemble it. Ours takes the two tensors it is
-    already holding and writes the file.
+    built graph has no frontend to assemble it. Ours takes the reel and writes
+    it part by part.
 
     The display-id stamp is the whole reason the node can show its own result —
     see the module docstring.
@@ -326,7 +330,7 @@ def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
     setting itself would keep writing yesterday's quality until something else
     about the render changed.
     """
-    save = graph.node(SAVE_NODE, images=images, audio=audio,
+    save = graph.node(SAVE_NODE, reel=reel,
                       fps=float(canvas.FPS), filename_prefix=filename_prefix,
                       crf=settings.video_crf())
     save.set_override_display_id(unique_id)

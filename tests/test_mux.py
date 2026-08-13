@@ -1,0 +1,198 @@
+"""What `mux.write` actually puts in the file.
+
+The reel replaced a `torch.cat`, and a concatenation is self-evidently in order
+while a container written part by part is not: the frames and the samples are
+handed to two encoders with timestamps this module computes, and getting those
+wrong produces a file that plays rather than an exception. So this writes real
+reels and reads the mp4 back with the same decoder ComfyUI uses.
+
+Needs `av` and `torch` — the ComfyUI venv:
+
+    <comfy-venv>/bin/python3 tests/test_mux.py
+
+Skips itself with a message if they are not importable.
+"""
+
+import importlib.util
+import os
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load():
+    """`mux.py` alone, by path.
+
+    It imports nothing from the package and nothing from ComfyUI — writing a
+    container needs av, torch and numpy and no more than that — so it is loaded
+    on its own rather than through `__init__`, which would drag in the nodes and
+    with them a whole install.
+    """
+    spec = importlib.util.spec_from_file_location("mmc_mux", os.path.join(ROOT, "mux.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    import av
+    import torch
+
+    mux = _load()
+except Exception as exc:  # noqa: BLE001
+    print(f"skipped: needs av and torch ({type(exc).__name__}: {exc})")
+    sys.exit(0)
+
+FAILURES = []
+FPS = 24
+RATE = 48000
+WIDTH, HEIGHT = 64, 48
+
+
+def check(label, got, want):
+    if got != want:
+        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+
+
+def close(label, got, want, slack):
+    if abs(got - want) > slack:
+        FAILURES.append(f"{label}: got {got!r}, want {want!r} +/- {slack}")
+
+
+def expect_error(label, fn, fragment):
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001
+        if fragment not in str(exc):
+            FAILURES.append(f"{label}: error {str(exc)!r} does not mention {fragment!r}")
+    else:
+        FAILURES.append(f"{label}: expected an error mentioning {fragment!r}, got none")
+
+
+def part(frames, seconds=None, level=0.5, size=(WIDTH, HEIGHT), rate=RATE, channels=2):
+    """One reel entry. `seconds=None` means no soundtrack at all.
+
+    The picture is a flat grey at `level`, which is what makes a decoded frame
+    identifiable: the parts are told apart by their brightness on the way back
+    out, so "did part 2's frames land where part 2 belongs" is answerable.
+    """
+    width, height = size
+    images = torch.full((frames, height, width, 3), float(level))
+    if seconds is None:
+        return {"images": images, "audio": None}
+    samples = int(round(seconds * rate))
+    return {"images": images,
+            "audio": {"waveform": torch.zeros(1, channels, samples), "sample_rate": rate}}
+
+
+def written(parts, crf=23):
+    """Write a reel to a temp file and read back (frames, levels, samples)."""
+    path = os.path.join(tempfile.mkdtemp(), "reel.mp4")
+    mux.write(path, parts, fps=FPS, crf=crf)
+    frames, levels, samples = 0, [], 0
+    with av.open(path) as container:
+        for frame in container.decode(video=0):
+            frames += 1
+            levels.append(round(float(frame.to_ndarray(format="rgb24")[0, 0, 0]) / 255, 1))
+        if container.streams.audio:
+            container.seek(0)
+            for frame in container.decode(audio=0):
+                samples += frame.samples
+    return frames, levels, samples, path
+
+
+# ---- one part, which is what a Creator render is ----------------------------
+
+frames, levels, samples, path = written([part(12, seconds=0.5)])
+check("a lone part writes its own frames", frames, 12)
+check("...at one brightness", set(levels), {0.5})
+# AAC pads and delays; what matters is that the sound is the picture's length
+# rather than the 0.5 s it was handed. 12 frames at 24 fps is 0.5 s exactly, so
+# this one is also the case where nothing had to be fitted.
+close("...with sound the length of the picture", samples, int(0.5 * RATE), 2048)
+
+# ---- several parts, which is what a strip is --------------------------------
+
+frames, levels, samples, _ = written(
+    [part(10, seconds=10 / FPS, level=0.2),
+     part(5, seconds=5 / FPS, level=0.8)])
+check("the parts' frames are all there", frames, 15)
+check("...in play order", levels, [0.2] * 10 + [0.8] * 5)
+close("...and the sound runs the whole reel", samples, int(15 / FPS * RATE), 2048)
+
+# The claim `_fit` exists for. A part whose sound falls short of its own picture
+# does not lose that time — laid end to end, it *shifts* everything after it,
+# and the drift accumulates down the reel. Here part 1 is handed a third of the
+# sound its picture needs; the reel must still come out the full length.
+frames, levels, samples, _ = written(
+    [part(24, seconds=1 / 3, level=0.2), part(24, seconds=1.0, level=0.8)])
+check("a part with short sound keeps its frames", frames, 48)
+close("...and is padded rather than letting the next part slide",
+      samples, int(2 * RATE), 2048)
+
+# The other direction: sound that overruns its picture is cut, not carried into
+# the part after it.
+frames, _, samples, _ = written(
+    [part(24, seconds=3.0, level=0.2), part(24, seconds=1.0, level=0.8)])
+check("a part with long sound keeps its frames", frames, 48)
+close("...and is cut to its own picture", samples, int(2 * RATE), 2048)
+
+# A silent part in a reel that has sound — what a supplied clip with no
+# soundtrack will be. Silence of its own length, so the parts after it are
+# still where they belong.
+frames, levels, samples, _ = written(
+    [part(12, seconds=0.5, level=0.2), part(12, seconds=None, level=0.8),
+     part(12, seconds=0.5, level=0.4)])
+check("a silent part still plays", frames, 36)
+check("...in its place", levels, [0.2] * 12 + [0.8] * 12 + [0.4] * 12)
+close("...and holds its own time open", samples, int(1.5 * RATE), 2048)
+
+# A reel with no sound anywhere writes no audio stream at all, rather than a
+# stream of silence nobody asked for.
+_, _, samples, silent_path = written([part(8, seconds=None), part(8, seconds=None)])
+check("a reel with no sound has no audio stream", samples, 0)
+with av.open(silent_path) as container:
+    check("...and none in the container either", len(container.streams.audio), 0)
+
+# ---- what it refuses --------------------------------------------------------
+#
+# These were the pairwise join's checks and they say the same thing they always
+# did: the timeline pins one canvas across every pass, so parts that disagree
+# mean something upstream resized one of them. The error names the part, because
+# on a long strip "the parts do not match" is not a place to look.
+
+expect_error("parts of different sizes are refused, by number",
+             lambda: mux.reel_geometry([part(4), part(4, size=(32, 24))]),
+             "part 2")
+expect_error("...saying both sizes",
+             lambda: mux.reel_geometry([part(4), part(4, size=(32, 24))]),
+             "32x24")
+expect_error("an empty reel is refused",
+             lambda: mux.reel_geometry([]), "reel is empty")
+expect_error("parts at different sample rates are refused",
+             lambda: written([part(4, seconds=0.1), part(4, seconds=0.1, rate=44100)]),
+             "part 2")
+expect_error("parts with different channel counts are refused",
+             lambda: written([part(4, seconds=0.1), part(4, seconds=0.1, channels=1)]),
+             "part 2")
+expect_error("a layout with no name is refused rather than guessed at",
+             lambda: written([part(4, seconds=0.1, channels=3)]),
+             "3-channel")
+
+# ---- the quality setting reaches the encoder --------------------------------
+#
+# The old save node had to refuse a CRF on ComfyUI older than 0.29, because
+# core's writer only learned the argument there. Writing the container here, it
+# is always honoured — and the check that it *is* is that the same reel comes
+# out a different size at a different CRF.
+noisy = [{"images": torch.rand(24, HEIGHT, WIDTH, 3), "audio": None}]
+small = os.path.getsize(written(noisy, crf=40)[3])
+large = os.path.getsize(written(noisy, crf=8)[3])
+if not small < large:
+    FAILURES.append(f"crf changes nothing: crf 40 wrote {small} bytes, crf 8 wrote {large}")
+
+if FAILURES:
+    print("\n".join(FAILURES))
+    sys.exit(1)
+print("all mux tests passed — reels written and read back")
