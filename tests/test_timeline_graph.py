@@ -54,6 +54,11 @@ except Exception as exc:  # noqa: BLE001
     sys.exit(0)
 
 tl = importlib.import_module(f"{PACKAGE}.timeline")
+# The user-facing node moved to `creator_node` when the Creator and the Timeline
+# became one. This id is the retired one, kept loadable for saved workflows, and
+# it runs the same body — so it is still the right thing to drive these through.
+cn = importlib.import_module(f"{PACKAGE}.creator_node")
+accel_mod = importlib.import_module(f"{PACKAGE}.accel")
 outputs_mod = importlib.import_module(f"{PACKAGE}.outputs")
 
 FAILURES = []
@@ -116,14 +121,14 @@ def build(data=DATA, **overrides):
     # and not the plain names.
     from comfy_api.latest import io as comfy_io
 
-    previous = tl.MiniMaxH3Timeline.hidden
-    tl.MiniMaxH3Timeline.hidden = comfy_io.HiddenHolder(
+    previous = cn.MiniMaxH3Timeline.hidden
+    cn.MiniMaxH3Timeline.hidden = comfy_io.HiddenHolder(
         unique_id=NODE_ID, prompt=None, extra_pnginfo=None, dynprompt=None,
         auth_token_comfy_org=None, api_key_comfy_org=None)
     try:
-        return tl.MiniMaxH3Timeline.execute(**kwargs)
+        return cn.MiniMaxH3Timeline.execute(**kwargs)
     finally:
-        tl.MiniMaxH3Timeline.hidden = previous
+        cn.MiniMaxH3Timeline.hidden = previous
 
 
 def without(field, data=DATA):
@@ -719,7 +724,7 @@ check("...and the tail of its sound",
 # the arguments; these cover the edge that only exists in the built graph.
 
 check("no accelerator nodes by default",
-      [t for t in by_type if t in (tl.accel.BLOCK_CACHE_NODE, tl.accel.SPECTRUM_NODE)], [])
+      [t for t in by_type if t in (accel_mod.BLOCK_CACHE_NODE, accel_mod.SPECTRUM_NODE)], [])
 
 # Every KSampler must read straight off its own segment node when nothing is on.
 segments_by_id = {node_id for node_id, _ in by_type["MiniMaxH3TimelineSegment"]}
@@ -740,7 +745,7 @@ class _FakePack:
 
 
 _restore = dict(comfy_nodes.NODE_CLASS_MAPPINGS)
-comfy_nodes.NODE_CLASS_MAPPINGS[tl.accel.BLOCK_CACHE_NODE] = _FakePack
+comfy_nodes.NODE_CLASS_MAPPINGS[accel_mod.BLOCK_CACHE_NODE] = _FakePack
 try:
     accel_graph = build(block_cache="fast").expand
     accel_by_type = {}
@@ -751,7 +756,7 @@ try:
     # carry over and comparing against it is how this silently tests nothing.
     accel_segment_ids = {node_id for node_id, _ in accel_by_type["MiniMaxH3TimelineSegment"]}
 
-    patches = accel_by_type.get(tl.accel.BLOCK_CACHE_NODE, [])
+    patches = accel_by_type.get(accel_mod.BLOCK_CACHE_NODE, [])
     check("one accelerator patch per segment", len(patches), 3)
     check("the patch is the pack's chosen preset",
           sorted({i["mode"] for _, i in patches}), ["H3 Fast — 0.10"])

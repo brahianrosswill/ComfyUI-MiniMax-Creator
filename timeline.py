@@ -15,41 +15,39 @@ becomes one ordinary request and everything downstream is unchanged. What it
 costs is anything one pass can only have one of: one mode, one checkpoint, one
 LoRA stack, one seed, and no per-segment continuation to switch.
 
-The rest of this module is the chained path.
+The rest of this module is the chained path: the nodes the emitter writes into
+the expanded graph, and the two helpers `creator_node` names its payloads with.
 
-The Creator node hands out conditioning and lets the graph own the sampler. A
-timeline cannot: segment 2 starts from segment 1's *decoded* last frame, so the
-chain has a data dependency that only exists downstream of sampling. Returning
-conditioning N times would not express it, and feeding the result back into the
-node's own input would be a cycle the executor refuses to run.
+**The user-facing node is not here.** It was, while the Creator and the Timeline
+were two of them; they are one now and it lives in `creator_node.py`, because
+one shot and twenty are the same node and the pack has one front door. What is
+left in this module is the machinery that node expands into — none of it meant
+to be placed by hand, all of it `is_dev_only`.
 
-So this node builds the graph instead of being a node in it. `execute` compiles
-the timeline, emits one `segment -> KSampler -> decode` chain per segment with
-each chain's last frame wired into the next, and returns that subgraph through
-ComfyUI's `expand` mechanism. The "feed the result back" is a genuine forward
-edge in a generated graph, not a loop.
+Why a graph rather than an ordinary node at all: segment 2 starts from segment
+1's *decoded* last frame, so the chain has a data dependency that only exists
+downstream of sampling. Returning conditioning N times would not express it, and
+feeding the result back into the node's own input would be a cycle the executor
+refuses to run. So the node builds the graph instead of being a node in it —
+one `segment -> KSampler -> decode` chain per pass, each chain's last frame
+wired into the next, returned through ComfyUI's `expand` mechanism. The "feed the
+result back" is a genuine forward edge in a generated graph, not a loop.
 
-Two consequences worth knowing before reading further:
-
-- **This node owns the sampler.** It has to, because it is the thing writing the
-  KSampler into the graph. That is the price of chaining and the reason this is
-  a second node rather than a mode of the first — the Creator's contract, where
-  you wire your own sampler, is still the better one for a single clip.
-- **Editing a segment only re-runs that segment and the ones after it.** What
-  buys that is easy to lose: each segment node is handed its own payload rather
-  than the whole timeline, so a payload changes only when its own segment does.
-  Hand a segment the whole blob and editing the last shot re-generates all of
-  them. The loaders `models.emit_links` writes are ordinary nodes keyed on their
-  filenames, so they cache the same way and are built once for the whole chain.
+One consequence worth knowing before reading further: **editing a segment only
+re-runs that segment and the ones after it.** What buys that is easy to lose:
+each segment node is handed its own payload rather than the whole piece, so a
+payload changes only when its own segment does. Hand a segment the whole blob and
+editing the last shot re-generates all of them. The loaders `models.emit_links`
+writes are ordinary nodes keyed on their filenames, so they cache the same way
+and are built once for the whole chain.
 """
 
 import json
 
 from comfy_api.latest import io
 
-from . import (accel, canvas, compile as compiler, encode as encoder, lora,
-               media, models, mux, outputs, payload as payload_repair, render,
-               settings, spill)
+from . import (canvas, compile as compiler, encode as encoder, lora, media, mux,
+               payload as payload_repair, settings, spill)
 
 # The reel's own socket type: the parts of the finished video in play order,
 # each of them a file — a pass `spill.py` wrote, or a clip the user supplied.
@@ -60,35 +58,17 @@ REEL_TYPE = "MMC_REEL"
 # string, so a graph cannot wire a clip's spec where a pass's belongs.
 PASS_TYPE = "MMC_PASS"
 
-DEFAULT_DATA = json.dumps({
-    "version": 2,
-    "render": "chained",
-    "prompt": "",
-    "soundscape": "",
-    "music": "",
-    "aspect": "16:9",
-    "short_edge": 768,
-    "loras": [],
-    # The piece's own reference pool — a character sheet, a location plate —
-    # cited by handle from any segment's text and injected into exactly the
-    # segments that cite it. See `compile.timeline_pool`.
-    "assets": [],
-    # Where the finished clip lands under output/. See `outputs`.
-    "output_prefix": outputs.VIDEO_PREFIX,
-    # Which files to load. Empty here rather than guessed: a fresh node has no
-    # idea what is on this machine, and the UI fills it from the listing route.
-    "models": {},
-    "segments": [
-        {"prompt": "", "assets": [], "loras": [], "duration_s": 6, "checkpoint": "auto"},
-    ],
-}, indent=2)
+def _parse(data):
+    """One of the payload strings the nodes below are handed, as a dict.
 
-
-def _parse(timeline_data):
+    Not the node's blob — that is `creator_node`'s, and it is a piece rather than
+    a payload. These are the self-contained strings the emitter writes onto the
+    graph: a segment's, a clip's.
+    """
     try:
-        return json.loads(timeline_data)
+        return json.loads(data)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"timeline_data is not valid JSON: {exc}") from exc
+        raise ValueError(f"segment data is not valid JSON: {exc}") from exc
 
 
 def _announce(unique_id, progress):
@@ -106,7 +86,7 @@ def _announce(unique_id, progress):
         server.send_sync("mmc_segment", {"node": unique_id, **progress})
 
 
-def _stamps(data):
+def stamps(data):
     """Mtimes of every file any segment names, for `fingerprint_inputs`."""
     import os
 
@@ -141,111 +121,23 @@ def _stamps(data):
     return tuple(out)
 
 
-def _labels(runs):
+def labels(runs):
     """What to call each payload in an error raised about it.
 
     A pass holding one segment is that segment, and is named the way it always
-    was — most timelines are nothing but these. A pass holding several is named
-    by the cards it covers, because that is what the user would go and look at.
-    A timeline that is one pass end to end has no card worth singling out.
+    was — most pieces are nothing but these. A pass holding several is named by
+    the cards it covers, because that is what the user would go and look at.
+
+    A piece that is *one* pass has no card worth singling out, and there are two
+    of those. One pass over several cards is the one-pass render. One pass over
+    one card is a lone generation — there is no strip on the node's face, so
+    "Segment 1" would name something the user cannot see. It says what the
+    Creator node always said instead, which is what that piece still is.
     """
-    if len(runs) == 1 and runs[0][1] - runs[0][0] > 1:
-        return ["This one-pass render"]
+    if len(runs) == 1:
+        return ["This generation" if runs[0][1] - runs[0][0] == 1 else "This one-pass render"]
     return [f"Segment {start + 1}" if end - start == 1 else f"Segments {start + 1}-{end}"
             for start, end in runs]
-
-
-class MiniMaxH3Timeline(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        import comfy.samplers
-
-        return io.Schema(
-            node_id="MiniMaxH3Timeline",
-            display_name="MiniMax H3 Timeline",
-            category="MiniMax",
-            description=(
-                "Build a clip out of several shots. Chained: each segment is a full "
-                "generation with its own prompt, references and LoRAs, and can start "
-                "from the previous one's last frame. One pass: the same segments become "
-                "the shots of a single generation, cut times and all."
-            ),
-            # This node returns a subgraph rather than tensors — see the module
-            # docstring for why it cannot be an ordinary node. It is also an
-            # output node: it saves the finished clip itself, which is what lets
-            # it have no output sockets either.
-            enable_expand=True,
-            is_output_node=True,
-            inputs=[
-                # No model sockets. The weights are named in `timeline_data` and
-                # `models.emit_links` builds the loaders inside the subgraph —
-                # see that module for why that is better than five wires.
-                io.String.Input("timeline_data", multiline=True, default=DEFAULT_DATA),
-                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
-                    tooltip="Chained: segment k runs on seed + k, so consecutive shots are not the same noise with different prompts. One pass: there is one generation, so it is just the seed."),
-                io.Int.Input("steps", default=20, min=1, max=10000),
-                # The released H3 checkpoints are CFG-distilled, so guidance is
-                # already in the weights and 1.0 is the value they were trained
-                # to run at. Left as an ordinary widget: it is a default, not a
-                # constraint, and anyone who wants to push it can.
-                io.Float.Input("cfg", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01),
-                # What the official H3 templates sample with. Left to the combo's
-                # own default this would be `euler`, which is simply the first
-                # name in core's list — a 20-step H3 render is visibly worse for
-                # it, and that is the whole difference between this node and a
-                # hand-wired Creator graph copied off the template.
-                io.Combo.Input("sampler_name", options=comfy.samplers.KSampler.SAMPLERS,
-                               default="res_multistep"),
-                io.Combo.Input("scheduler", options=comfy.samplers.KSampler.SCHEDULERS,
-                               default="simple",
-                               tooltip="The templates use 'simple'; for reference-heavy prompts they suggest 'beta' or 'normal' instead."),
-                # Both accelerators are other people's nodes and both are off
-                # until asked for — see `accel.py`. They patch the model, so they
-                # cost nothing to leave off and nothing here reimplements them.
-                io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off",
-                    tooltip="FirstBlockCache: skip the rest of the DiT on steps where the first block barely moved. 'fast' is the pack's recommended preset. Needs ComfyUI-MiniMaxH3-FirstBlockCache."),
-                io.Boolean.Input("spectrum", default=False,
-                    tooltip="Spectrum: forecast features across steps instead of evaluating every one. Needs ComfyUI-Spectrum-MiniMax-H3. Combines with block_cache; cannot be combined with EasyCache."),
-                io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01,
-                    tooltip="Spectrum's video spectral share. Higher is faster and further from a native render. Ignored unless 'spectrum' is on."),
-            ],
-            # Nothing comes out either: the render is saved and shown in the node
-            # body, so there is no socket for a graph to hang off.
-            outputs=[],
-            hidden=[io.Hidden.unique_id],
-        )
-
-    @classmethod
-    def fingerprint_inputs(cls, timeline_data, **kwargs):
-        try:
-            return (timeline_data, _stamps(json.loads(timeline_data)))
-        except Exception:
-            return (timeline_data, ())
-
-    @classmethod
-    def execute(cls, timeline_data, seed, steps, cfg, sampler_name, scheduler,
-                block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
-        data = _parse(timeline_data)
-
-        # One payload per pass, and a pass is a run of merged segments — usually
-        # one segment long. How the timeline is *compiled* is the only thing the
-        # merging changes; what is built from the result is the same loop either
-        # way. `render.emit` wires each payload to the one before it, and a pass
-        # holding several segments simply has no seam inside it to wire.
-        payloads = compiler.timeline_payloads(data, image_size_lookup=media.image_size)
-        labels = _labels(compiler.timeline_runs(data))
-
-        graph = render.emit(
-            payloads, labels,
-            models.Weights.from_blob(data),
-            render.Sampling(seed=seed, steps=steps, cfg=cfg,
-                            sampler_name=sampler_name, scheduler=scheduler),
-            accel.Settings(block_cache=block_cache, spectrum=spectrum,
-                           spectrum_blend=spectrum_blend),
-            cls.hidden.unique_id,
-            # Refused before anything is sampled — see MiniMaxH3Creator.execute.
-            filename_prefix=outputs.video(data, settings.video_prefix()))
-        return render.expanded(graph)
 
 
 class MiniMaxH3TimelineSegment(io.ComfyNode):
@@ -307,7 +199,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
     def fingerprint_inputs(cls, segment_data, **kwargs):
         try:
             payload = json.loads(segment_data)
-            return (segment_data, _stamps({"segments": [payload.get("request", {})]}))
+            return (segment_data, stamps({"segments": [payload.get("request", {})]}))
         except Exception:
             return (segment_data, ())
 
@@ -627,7 +519,7 @@ class MiniMaxH3ClipReel(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, clip_data, **kwargs):
         try:
-            return (clip_data, _stamps({"segments": [json.loads(clip_data)]}))
+            return (clip_data, stamps({"segments": [json.loads(clip_data)]}))
         except Exception:
             return (clip_data, ())
 
@@ -684,7 +576,7 @@ class MiniMaxH3ClipFrames(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, clip_data, **kwargs):
         try:
-            return (clip_data, _stamps({"segments": [json.loads(clip_data)]}))
+            return (clip_data, stamps({"segments": [json.loads(clip_data)]}))
         except Exception:
             return (clip_data, ())
 
@@ -716,7 +608,7 @@ class MiniMaxH3ClipAudio(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, clip_data, **kwargs):
         try:
-            return (clip_data, _stamps({"segments": [json.loads(clip_data)]}))
+            return (clip_data, stamps({"segments": [json.loads(clip_data)]}))
         except Exception:
             return (clip_data, ())
 
@@ -810,7 +702,7 @@ class MiniMaxH3Save(io.ComfyNode):
 
 # Registered by `creator_node.MiniMaxCreatorExtension` — one extension for the
 # package, so there is one place that says what this node pack contains.
-NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3Reel,
+NODES = [MiniMaxH3TimelineSegment, MiniMaxH3Reel,
          MiniMaxH3PassFrames, MiniMaxH3PassAudio,
          MiniMaxH3ClipReel, MiniMaxH3ClipFrames, MiniMaxH3ClipAudio,
          MiniMaxH3Save]

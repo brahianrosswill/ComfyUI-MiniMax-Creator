@@ -880,7 +880,7 @@ export { syncCanvas as syncTimeline };
  * Mirrors `compile.PIECE_FIELDS`.
  */
 export const PIECE_FIELDS = ["aspect", "short_edge", "upscale", "sample_edge",
-                             "refine_denoise", "models", "turbo"];
+                             "refine_denoise", "models", "turbo", "output_prefix"];
 
 /** What only a lone generation ever carried at the top level. Tells a version-1
  *  `creator_data` blob from a fresh node's "{}" — which is an empty piece and
@@ -1041,6 +1041,12 @@ export function serializeTimeline(timeline) {
     // round-trips exactly as it always did.
     ...(timeline.assets?.length ? { assets: serializeAssets(timeline.assets) } : {}),
     audio_tail_s: clampTail(timeline.audio_tail_s),
+    // Where this node's renders land, when the blob overrides the setting. No
+    // control writes it — it is the hand-edit the README documents as the only
+    // way to have two nodes write to different places — so it is carried
+    // through rather than understood. Dropping it here is what made editing
+    // anything on the node quietly move its output back to the default folder.
+    ...(timeline.output_prefix ? { output_prefix: timeline.output_prefix } : {}),
     ...serializeModels(timeline.models),
     ...serializeTurbo(timeline.turbo),
     segments: timeline.segments.map((segment, index) => {

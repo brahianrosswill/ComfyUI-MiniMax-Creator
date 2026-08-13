@@ -1308,7 +1308,7 @@ def _inject_pool(pool, request, extra_texts=()):
 # these inline because it had nowhere else to keep them; a piece holds them once
 # and every shot on the strip is held to them. Mirrors `state.PIECE_FIELDS`.
 PIECE_FIELDS = ("aspect", "short_edge", "upscale", "sample_edge",
-                "refine_denoise", "models", "turbo")
+                "refine_denoise", "models", "turbo", "output_prefix")
 
 # What only a lone generation ever carried at the top level. Used to tell a
 # version-1 `creator_data` blob from a fresh node's "{}" — which is an empty
@@ -1469,6 +1469,23 @@ def timeline_payloads(data, image_size_lookup=None):
                 data, start, head, pool, global_cited, global_prompt)})
 
         payload = payloads[-1]
+
+        # `prompt_override` replaces the composed prompt verbatim, and the
+        # segment node reads it off the *payload* — so it has to be lifted out
+        # of the request that carries it. It describes one generation, which is
+        # why only a pass of one segment can have one: in a merged run the
+        # description is assembled from several shots and an override on one of
+        # them would silently discard the others.
+        #
+        # A hand-written blob is the only thing that carries one now — the
+        # refiner's editable rewrite is the same escape hatch with a UI on it —
+        # but it carried one on the Creator node before that node and this path
+        # became the same path, and it is honoured here so that it still does.
+        if "request" in payload:
+            override = payload["request"].pop("prompt_override", None)
+            if override:
+                payload["prompt_override"] = override
+
         # Segment 1 has nothing in front of it, so the flags are ignored there
         # rather than rejected: they are leftovers from reordering, not a
         # mistake worth refusing a whole timeline over. Read off the run's first

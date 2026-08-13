@@ -57,10 +57,14 @@ export function openTimeline(options) {
 const cardWidth = (seconds) => 132 + Math.round(Math.sqrt(seconds) * 26);
 
 class Timeline {
-  constructor({ timeline, onCommit }, resolve) {
+  constructor({ timeline, onCommit, edit = null }, resolve) {
     this.timeline = timeline;
     this.onCommit = onCommit;
     this.resolve = resolve;
+    // A card to open a window on as soon as the strip is up. Set when the strip
+    // was opened *by* growing a shot into it: the new card is where the writing
+    // is going, so it opens ready rather than waiting to be found.
+    this.openOnMount = edit;
   }
 
   commit() {
@@ -221,6 +225,10 @@ class Timeline {
 
     this.unmount = mountOverlay(this.overlay, () => this.close());
     this.render();
+    if (this.openOnMount != null && this.timeline.segments[this.openOnMount]) {
+      this.edit(this.openOnMount);
+      this.openOnMount = null;
+    }
   }
 
   close() {
@@ -1568,6 +1576,9 @@ export class TimelineBody {
     this.nodeId = nodeId;
     this.preStage = preStage;
     this.timeline = S.parseTimeline(read());
+    // The face's editor, when the piece is one shot and the face is wearing
+    // one. Null the rest of the time — see `loneShot`.
+    this.faceEditor = null;
 
     // The same stage the Creator has, showing the same thing: a timeline is one
     // clip, and what it is making is one picture whatever the strip looks like.
@@ -1598,6 +1609,7 @@ export class TimelineBody {
   destroy() {
     this.stage?.destroy();
     this.laneFit?.disconnect();
+    this.dropFaceEditor();
   }
 
   /** See `CreatorEditor.adoptWeights` — same rescue, same reason. */
@@ -1610,7 +1622,149 @@ export class TimelineBody {
    *  the node is created, so the body built in `nodeCreated` saw the default. */
   reload() {
     this.timeline = S.parseTimeline(this.read());
+    // The face editor closes over the segment object it was handed, and this is
+    // a different one. Dropped rather than re-pointed: `render` builds another
+    // against whatever the strip now holds.
+    this.dropFaceEditor();
     this.render();
+  }
+
+  /**
+   * Whether this piece is one shot and nothing else — the rule that picks the
+   * face.
+   *
+   * **The face is the smallest one that can show everything this piece has
+   * set.** One segment is not enough on its own: a piece can carry a global
+   * prompt, a reference pool, LoRAs patched onto every shot and the two
+   * Context-IR audio fields, and none of those has anywhere to live on a face
+   * that is one shot's editor. A face that cannot draw a field it still queues
+   * is a trap, so the presence of any of them takes the strip face instead.
+   *
+   * That is also why there is no way back other than emptying them: collapsing
+   * is what setting them does, run backwards. Nothing is stored and nothing is
+   * toggled — this is asked on every render.
+   *
+   * A supplied clip is not a shot. A piece of one clip has no generation to put
+   * on the face at all, so it keeps the strip.
+   */
+  loneShot() {
+    const piece = this.timeline;
+    return piece.segments.length === 1
+      && !S.isClip(piece.segments[0])
+      && !(piece.prompt || "").trim()
+      && !(piece.soundscape || "").trim()
+      && !(piece.music || "").trim()
+      && !(piece.assets?.length)
+      && !(piece.loras?.length);
+  }
+
+  /** The editor this body is currently wearing, if it is wearing one. Named to
+   *  match `PreStageBody.editor`: both are a body that sometimes *is* a
+   *  `CreatorEditor` and sometimes holds one. */
+  get editor() { return this.faceEditor; }
+
+  dropFaceEditor() {
+    this.faceEditor?.destroy();
+    this.faceEditor = null;
+  }
+
+  /**
+   * The one shot's editor, on the node's face.
+   *
+   * The Creator node's body, unchanged, because it *is* the Creator node's body
+   * — the same class the strip opens a card with, mounted on the face instead of
+   * in a window. What it is told that a card is not: it owns the node (so it
+   * draws the sampler row, the weights pill and the stage), and its canvas and
+   * weights live one level up on the piece.
+   *
+   * Built once per segment object and kept, because it holds a contenteditable
+   * with a caret in it: rebuilding it on every commit would take the caret away
+   * mid-sentence, which is the whole reason `CreatorEditor` refills hosts rather
+   * than re-rendering itself.
+   */
+  faceBody() {
+    const segment = this.timeline.segments[0];
+    if (this.faceEditor?.state === segment) return this.faceEditor;
+    this.dropFaceEditor();
+    this.faceEditor = new CreatorEditor({
+      state: segment,
+      // The canvas, the weights and the turbo switch are the piece's, exactly as
+      // they are for a strip of twenty. Being the only shot changes nothing
+      // about where they live — which is what makes growing a second one a
+      // matter of adding a card and not of moving any settings.
+      piece: this.timeline,
+      onCommit: () => this.commit(),
+      samplingWidgets: this.widgets,
+      onWidgetChange: this.onWidgetChange,
+      nodeId: this.nodeId,
+      // The node's, so a render lands in the satellite the body already owns
+      // rather than in a second stage listening for the same previews.
+      stage: this.stage,
+      setRoute: (route) => { this.timeline.models.route = route; this.commit(); },
+      preStage: this.preStage,
+      // One card of a piece, refined against the piece — the same target the
+      // strip gives a card, because that is what this is. The route knows a
+      // piece of one segment has no cut times of its own and asks the model for
+      // the cuts, which is what the Creator always did.
+      refineTarget: () => ({
+        kind: "segment",
+        index: 0,
+        data: JSON.parse(S.serializeTimeline(this.timeline)),
+      }),
+      // No `onRefined`: with no strip there is nothing above this shot for the
+      // soundscape and the score to belong to, so the editor keeps its own audio
+      // fields and writes them onto the segment. Setting the *piece's* is what
+      // the strip face is for, and doing it is what takes you there.
+      afterPanel: () => [this.renderGrow()],
+    });
+    return this.faceEditor;
+  }
+
+  /**
+   * Unexposed film: the stretch after the shot, where the next one goes.
+   *
+   * The leader is the unexposed head of a reel and this package already draws it
+   * — `.mmc-tl-empty` is a perforation rail with a sentence on it, for a strip
+   * with nothing on it yet. This is the same rail one card later, and it means
+   * the same thing: film that has not been shot.
+   *
+   * Quiet on purpose. Most renders are one shot, and a control that announced
+   * itself would be wrong nine times out of ten. It is the only thing between
+   * the prompt and the sampler row, on a face read top to bottom.
+   */
+  renderGrow() {
+    const full = this.timeline.segments.length >= S.MAX_SEGMENTS;
+    return el("button", {
+      class: "mmc-tl-grow",
+      disabled: full,
+      title: full
+        ? t("This piece is at its limit of {count} shots.", { count: S.MAX_SEGMENTS })
+        : t("Add a second shot and open the strip. One shot or twenty, it is the same node."),
+      onclick: () => this.growIntoStrip(),
+    }, [el("span", { class: "mmc-tl-grow-mark", text: "+" }),
+        el("span", { text: t("Write the next shot") })]);
+  }
+
+  /**
+   * One shot becomes two, and the strip opens over it.
+   *
+   * The face does not mutate behind the user. They have been writing in the box
+   * on it, and replacing that box with a summary at the moment they ask for more
+   * room would be taking the writing surface away as a reward for wanting one.
+   * So the window arrives instead: card 1 is the shot they wrote, card 2 is the
+   * new one, open and ready. They watch the promotion happen in the place the
+   * new thing lives, and the face has changed by the time they close it.
+   *
+   * The new card is `continuingSegment` — a live seam on both tracks with a
+   * medium blend — because that is already what appending to the strip gives
+   * you, and the face must not be a second answer to a question the strip has
+   * answered.
+   */
+  growIntoStrip() {
+    if (this.timeline.segments.length >= S.MAX_SEGMENTS) return;
+    this.timeline.segments.push(S.continuingSegment());
+    this.commit();
+    this.open({ edit: this.timeline.segments.length - 1 });
   }
 
   commit() {
@@ -1623,8 +1777,11 @@ export class TimelineBody {
     this.render();
   }
 
-  open() {
-    openTimeline({ timeline: this.timeline, onCommit: () => this.commit() });
+  /** The strip, over the node. `edit` opens a card's window with it — what the
+   *  face does on the way from one shot to two, so the new card is where the
+   *  writing already is. */
+  open({ edit = null } = {}) {
+    openTimeline({ timeline: this.timeline, onCommit: () => this.commit(), edit });
   }
 
   value(name, fallback) {
@@ -1660,6 +1817,26 @@ export class TimelineBody {
   }
 
   render() {
+    // One shot wears its own editor; anything more wears the strip's summary.
+    // Which of them, on every render, off `loneShot` — there is no mode stored
+    // anywhere and nothing to get out of step with the piece.
+    if (this.loneShot()) {
+      const editor = this.faceBody();
+      editor.render();
+      // The editor's root *is* the body here — it brings its own rail, panel
+      // and sampler row, and its `afterPanel` puts the unexposed film between
+      // the last two.
+      if (this.root.firstChild !== editor.root) this.root.replaceChildren(editor.root);
+      // The editor's root is a body in its own right, padding and all. Hosting
+      // it inside another one would inset the face twice — which is a narrower
+      // face than the strip's on a node of the same width, and it showed as the
+      // sampler pills wrapping a row earlier here than there.
+      this.root.classList.add("hosting");
+      this.laneFit?.disconnect();
+      return;
+    }
+    this.root.classList.remove("hosting");
+    this.dropFaceEditor();
     // Same order as the Creator: the rail, what you are asking for, then how it
     // is run. The picture is beside the node, in the satellite.
     this.root.replaceChildren(this.renderRail(), this.renderPanel(), this.renderSampling());

@@ -419,6 +419,34 @@ export const css = `
     var(--mmc-surface-3) 0 8px, transparent 8px 20px);
 }
 
+/* --- the stretch after the shot ------------------------------------------- */
+/* Where a piece of one shot grows a second one. The same perforation rail the
+   leader wears, one card later and meaning the same thing: film that has not
+   been shot yet. It sits between the prompt and the sampler row because that is
+   where the next shot goes — part of what is being asked for, not of how it is
+   run.
+
+   Quiet, and it has to be: most renders are one shot, so a control that
+   announced itself would be wrong nine times out of ten. It is the only thing
+   between the panel and the sampler pills, which is what makes it findable
+   without being loud. */
+.mmc-tl-grow {
+  position: relative; width: 100%; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 13px 2px 3px; background: none; border: 0; border-radius: 8px;
+  color: var(--mmc-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  transition: color .12s ease;
+}
+.mmc-tl-grow::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 4px;
+  background-image: repeating-linear-gradient(90deg,
+    var(--mmc-surface-3) 0 8px, transparent 8px 20px);
+}
+.mmc-tl-grow:hover:not(:disabled) { color: var(--mmc-text); }
+.mmc-tl-grow:disabled { cursor: not-allowed; opacity: .4; }
+.mmc-tl-grow-mark { font-size: 14px; line-height: 1; color: var(--mmc-off); }
+.mmc-tl-grow:hover:not(:disabled) .mmc-tl-grow-mark { color: var(--mmc-accent); }
+
 /* A clip card. Solid where a shot's card is not, because the difference worth
    seeing at a glance is that this stretch of the piece already exists. */
 .mmc-tl-clip { background: var(--mmc-surface-3); }

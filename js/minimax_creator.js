@@ -4,7 +4,6 @@
 
 import { app } from "../../scripts/app.js";
 import { installStyles } from "./minimax_creator/styles.js";
-import { CreatorEditor } from "./minimax_creator/editor.js";
 import { TimelineBody } from "./minimax_creator/timeline.js";
 import { PreStageBody } from "./minimax_creator/prestage.js";
 import { Satellite } from "./minimax_creator/satellite.js";
@@ -13,11 +12,17 @@ import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
 const CREATOR = "MiniMaxH3Creator";
+// The retired Timeline id. One shot and twenty are the same node now, and this
+// is only what saved workflows still name — it mounts the same body, reads the
+// same piece-shaped blob and behaves identically. See `creator_node.py`.
 const TIMELINE = "MiniMaxH3Timeline";
 const PRESTAGE = "MiniMaxH3PreStage";
+// Both ids drive one body, so the pair of them is worth naming once rather than
+// spelling out at every branch below.
+const PIECE = [CREATOR, TIMELINE];
 // Unchanged by the stage: the picture floats in a satellite card beside the
 // node, so a node with a render is the same size as one without.
-const MIN_SIZE = { [CREATOR]: [620, 520], [TIMELINE]: [620, 360], [PRESTAGE]: [460, 420] };
+const MIN_SIZE = { [CREATOR]: [620, 520], [TIMELINE]: [620, 520], [PRESTAGE]: [460, 420] };
 const WIDGET = { [CREATOR]: "creator_data", [TIMELINE]: "timeline_data", [PRESTAGE]: "prestage_data" };
 // Which edge of the node the satellite result card hangs off. The PreStage sits
 // to the *left* of its Creator, so its result goes further left — the desk
@@ -258,55 +263,20 @@ app.registerExtension({
   name: "minimax.creator",
 
   async nodeCreated(node) {
-    if (node.comfyClass === CREATOR) {
-      node.mmcBody = attach(node, (widget) => {
-        const state = S.parseState(widget.value);
-        // Off `editor.state` rather than off `state`: loading a saved workflow
-        // hands the editor a different object through `setState`, and a closure
-        // over this one would go on refining the blob the node started with.
-        let editor;
-        editor = new CreatorEditor({
-          state,
-          onCommit: () => {
-            widget.value = S.serializeState(state);
-            node.graph?.setDirtyCanvas(true, true);
-          },
-          // The refiner compiles the blob server-side to find out what the
-          // request is, so it is sent the same JSON the node queues with rather
-          // than the live object, which carries UI-only fields.
-          refineTarget: () => ({
-            kind: "creator",
-            data: JSON.parse(S.serializeState(editor.state)),
-          }),
-          // The Creator owns its sampler too, so it draws the same row the
-          // Timeline does rather than a Creator-shaped version of it.
-          samplingWidgets: collectSampling(node),
-          onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
-          // Read late rather than captured: a node pasted from the clipboard is
-          // renumbered after it is built, and the stage matches previews by id.
-          nodeId: () => node.id,
-          // The node owns its route, so the mode badge cycles it here.
-          setRoute: (route) => { editor.state.models.route = route; editor.commit(); },
-          preStage: preStageControls(node),
-        });
-        return editor;
-      });
-    } else if (node.comfyClass === TIMELINE) {
-      node.mmcBody = attach(node, (widget) => {
-        const widgets = collectSampling(node);
-
-        return new TimelineBody({
-          read: () => widget.value,
-          write: (raw) => {
-            widget.value = raw;
-            node.graph?.setDirtyCanvas(true, true);
-          },
-          widgets,
-          onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
-          nodeId: () => node.id,
-          preStage: preStageControls(node),
-        });
-      });
+    if (PIECE.includes(node.comfyClass)) {
+      node.mmcBody = attach(node, (widget) => new TimelineBody({
+        read: () => widget.value,
+        write: (raw) => {
+          widget.value = raw;
+          node.graph?.setDirtyCanvas(true, true);
+        },
+        widgets: collectSampling(node),
+        onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
+        // Read late rather than captured: a node pasted from the clipboard is
+        // renumbered after it is built, and the stage matches previews by id.
+        nodeId: () => node.id,
+        preStage: preStageControls(node),
+      }));
     } else if (node.comfyClass === PRESTAGE) {
       node.mmcBody = attach(node, (widget) => {
         const state = S.parsePreStage(widget.value);
@@ -341,15 +311,7 @@ app.registerExtension({
   loadedGraphNode(node) {
     const body = node.mmcBody;
     if (!body) return;
-    if (node.comfyClass === CREATOR) {
-      const widget = node.widgets?.find((w) => w.name === WIDGET[CREATOR]);
-      const state = S.parseState(widget.value);
-      body.onCommit = () => {
-        widget.value = S.serializeState(state);
-        node.graph?.setDirtyCanvas(true, true);
-      };
-      body.setState(state);
-    } else if (node.comfyClass === PRESTAGE) {
+    if (node.comfyClass === PRESTAGE) {
       const widget = node.widgets?.find((w) => w.name === WIDGET[PRESTAGE]);
       const state = S.parsePreStage(widget.value);
       body.onCommit = () => {

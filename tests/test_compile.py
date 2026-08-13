@@ -1488,6 +1488,59 @@ check("a two-pass timeline samples under its target",
 check("...and the clip is conformed to what comes out, not to what is sampled",
       two[1]["clip"]["height"], 896)
 
+# ---- a lone generation works its own canvas out, pinned or not ---------------
+#
+# The Creator used to hand `render.emit` a payload it built by hand, with no
+# `canvas` key on it: a lone generation had nothing to be held to, so a start
+# frame set the aspect adaptively at compile time. It goes through
+# `timeline_payloads` now like every other piece, which stamps the one geometry
+# onto every payload — and the whole merge rests on that stamp being the answer
+# the generation would have reached on its own.
+#
+# `_timeline_canvas` says as much ("payload 1 is compiled exactly as a lone
+# generation would be") but nothing checked it, and the adaptive cases are
+# exactly where pinning and deriving could quietly diverge.
+
+_SIZES = {"tall.png": (768, 1366), "wide.png": (1920, 816), "square.png": (1024, 1024)}
+_look = lambda name: _SIZES.get(os.path.basename(name))
+
+
+def lone_shot(keyframe=None, **fields):
+    blob = {"version": 1, "prompt": "a room", "duration_s": 6,
+            "aspect": "16:9", "short_edge": 768, "loras": [], "models": {},
+            "assets": ([{"handle": "img-1", "kind": "image",
+                         "role": "first_frame", "filename": keyframe}] if keyframe else [])}
+    blob.update(fields)
+    return blob
+
+
+def derived_and_pinned(blob):
+    """What this generation compiles to the old way and the new way.
+
+    Old: the hand-built payload the Creator used to emit, with no canvas on it.
+    New: the payload `timeline_payloads` writes for the same blob, canvas and all.
+    """
+    old = compiler.compile_segment(
+        {"request": dict(blob), "continue": False, "continue_audio": False}, _look)
+    new = compiler.compile_segment(
+        compiler.timeline_payloads(dict(blob), image_size_lookup=_look)[0], _look)
+    fields = ("width", "height", "frames", "seconds", "mode", "checkpoint", "prompt")
+    return ([getattr(old, f) for f in fields], [getattr(new, f) for f in fields])
+
+
+for label, blob in [
+    ("no keyframe", lone_shot()),
+    ("a 9:16 keyframe under a 16:9 pill", lone_shot("tall.png")),
+    ("a 21:9 keyframe under a 16:9 pill", lone_shot("wide.png")),
+    ("a square keyframe", lone_shot("square.png")),
+    ("a keyframe at a narrower edge", lone_shot("tall.png", short_edge=640)),
+    ("a keyframe on a two-pass render",
+     lone_shot("tall.png", short_edge=1152, sample_edge=768, upscale="two_pass")),
+    ("a pinned aspect with no keyframe to argue", lone_shot(aspect="1:1")),
+]:
+    old, new = derived_and_pinned(blob)
+    check(f"the stamped canvas is the derived one — {label}", new, old)
+
 if FAILURES:
     print(f"{len(FAILURES)} failure(s):")
     for failure in FAILURES:
