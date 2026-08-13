@@ -5,8 +5,7 @@ ordinary node because of it: a node that samples has to *be* the sampler, and
 ComfyUI has no way to say that except by returning a subgraph. So both compile
 their blob to payloads and hand them here, and this emits
 
-    loaders -> segment -> [accelerators] -> [preview] -> KSampler
-            -> VAEDecode + VAEDecodeAudio -> Reel -> Save
+    loaders -> segment -> [accelerators] -> [preview] -> KSampler -> Reel -> Save
 
 once per payload, adding each to the reel the save node writes. The Creator
 passes one payload and the Timeline passes one per segment; a single-payload
@@ -19,11 +18,15 @@ The chaining is the only part a one-payload render does not exercise: segment N
 starting from segment N-1's decoded last frame. It is driven off the compiled
 payload rather than off a flag, so a Creator render simply never asks for it.
 
-**The passes are collected, not concatenated.** They used to be folded pairwise
-by a join node, which meant N-1 running totals all held alive by the executor's
-cache — O(N^2) in the length of the piece, and 81 GB of intermediates on a
-ten-pass 768p strip. A reel is a list of references that copies nothing, and
-`mux.py` writes the file from it one frame at a time.
+**The passes are collected on disk, not concatenated in memory.** They used to
+be folded pairwise by a join node, which meant N-1 running totals all held alive
+by the executor's cache — O(N^2) in the length of the piece, and 81 GB of
+intermediates on a ten-pass 768p strip. A reel is a list of parts that copies
+nothing, and each part is a file: the decode happens inside the reel node and
+`spill.py` writes what comes out of it straight to disk, because a node's output
+is kept for the whole execution and a decoded pass is the largest thing in the
+render. `mux.py` reads the parts back a frame at a time. Peak memory is one
+pass, whatever the strip is.
 
 **Both ends of that chain used to be the user's problem.** The loaders were five
 sockets on the node and the video was two outputs somebody had to wire a save
@@ -55,9 +58,8 @@ from . import accel, canvas, compile as compiler, media, models, outputs, settin
 
 SEGMENT_NODE = "MiniMaxH3TimelineSegment"
 REFINE_NODE = "MiniMaxH3RefinePass"
-LAST_FRAME_NODE = "MiniMaxH3LastFrame"
-AUDIO_TAIL_NODE = "MiniMaxH3AudioTail"
-TRIM_NODE = "MiniMaxH3SeamTrim"
+PASS_FRAMES_NODE = "MiniMaxH3PassFrames"
+PASS_AUDIO_NODE = "MiniMaxH3PassAudio"
 REEL_NODE = "MiniMaxH3Reel"
 CLIP_NODE = "MiniMaxH3ClipReel"
 CLIP_FRAMES_NODE = "MiniMaxH3ClipFrames"
@@ -151,9 +153,10 @@ def routed(compiled, labels):
 def is_clip_source(source):
     """Whether a seam is inheriting from supplied footage rather than a pass.
 
-    `decoded` holds one entry per pass in play order: a generated pass leaves
-    the two links its decoders produced, and a clip leaves its own spec, since
-    it has no decoded frames anywhere in the graph to point at.
+    `decoded` holds one entry per pass in play order, tagged by kind: a
+    generated pass leaves `("pass", link)`, the link its reel node hands out
+    naming what it spilled to disk, and a clip leaves `("clip", spec)`, since
+    there is nothing in the graph for it to point at.
     """
     return source[0] == "clip"
 
@@ -161,18 +164,18 @@ def is_clip_source(source):
 def inherited_frames(graph, source, feather):
     """The run of frames a seam takes off the pass in front of it.
 
-    Two roads to the same tensor. From a generated pass it is the tail of a
-    batch that already exists, which is what `MiniMaxH3LastFrame` cuts. From a
-    supplied clip there is no batch — the file goes into the finished video
-    without being decoded — so the run is read out of the clip's own window,
-    bounded by the seam's width. `MiniMaxH3ClipFrames` returns exactly the run
-    asked for, so there is nothing left for a last-frame node to take.
+    Two roads to the same tensor, and both of them go through a file. A
+    generated pass was written to disk the moment it decoded, so the run comes
+    back off the spill — see `MiniMaxH3Reel`. A supplied clip was never decoded
+    at all, so the run is read out of the clip's own window. Either way what is
+    read is the seam's width and not the pass, which is what makes a seam cost
+    the same behind a five-second shot and a five-minute one.
     """
     if is_clip_source(source):
         return graph.node(CLIP_FRAMES_NODE,
                           clip_data=json.dumps(source[1], sort_keys=True),
                           count=feather, at="tail").out(0)
-    return graph.node(LAST_FRAME_NODE, image=source[0],
+    return graph.node(PASS_FRAMES_NODE, source=source[1],
                       **({"count": feather} if feather > 1 else {})).out(0)
 
 
@@ -182,7 +185,7 @@ def inherited_audio(graph, source, seconds):
         return graph.node(CLIP_AUDIO_NODE,
                           clip_data=json.dumps(source[1], sort_keys=True),
                           seconds=seconds, at="tail").out(0)
-    return graph.node(AUDIO_TAIL_NODE, audio=source[1], seconds=seconds).out(0)
+    return graph.node(PASS_AUDIO_NODE, source=source[1], seconds=seconds).out(0)
 
 
 def emit(payloads, labels, weights, sampling, acceleration, unique_id,
@@ -221,9 +224,9 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
     graph = GraphBuilder()
     links = models.emit_links(graph, weights, set(where))
     reel = None             # the reel link holding every pass emitted so far
-    decoded = []            # every payload's decoded (images, audio), in order —
-                            # a seam defaults to the previous one but may name
-                            # any earlier segment via the payload's continue_from
+    decoded = []            # every payload as (kind, what to read it back from),
+                            # in order — a seam defaults to the previous one but
+                            # may name any earlier one via `continue_from`
 
     for index, one in enumerate(compiled):
         if one is None:
@@ -356,34 +359,24 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                 denoise=one.refine.denoise,
             )
 
-        # The H3 latent is a nested (video, audio) pair; core's two decoders each
-        # unbind the half they want. `VAEDecodeAudio` rather than
-        # `LTXVAudioVAEDecode`, which also accepts this latent and is what the H3
-        # templates do *not* use: it returns the decoder's output as-is, where
-        # this one attenuates anything hot enough to clip on the way to a file.
-        images = graph.node("VAEDecode", samples=sampled.out(0), vae=links.vae).out(0)
-        audio = graph.node("VAEDecodeAudio", samples=sampled.out(0), vae=links.audio_vae).out(0)
-        if one.feather > 1 or one.ends_feather > 1:
-            # A blended segment re-generates the runs it shares with its
-            # neighbours — the one it inherited at its head, the clip's opening
-            # at its tail. Played untrimmed, those moments would come round
-            # twice. The trimmed pair is also what later seams inherit from —
-            # their tail is identical either way, and this is the segment as
-            # delivered.
-            trimmed = graph.node(
-                TRIM_NODE, images=images, audio=audio,
-                frames=one.feather if one.feather > 1 else 0,
-                **({"tail": one.ends_feather} if one.ends_feather > 1 else {}))
-            images, audio = trimmed.out(0), trimmed.out(1)
-        decoded.append((images, audio))
-
-        # Added to the reel rather than concatenated onto what came before.
-        # Chained the same way the old pairwise join was — one node per pass,
-        # each taking the one in front of it — but what travels the wire is a
-        # list of references, so the passes are never adjacent in memory and
-        # nothing here holds a running total. See `MiniMaxH3Reel`.
-        reel = graph.node(REEL_NODE, images=images, audio=audio,
-                          **({"reel": reel} if reel is not None else {})).out(0)
+        # Decoded, trimmed, written to disk and added to the reel, all in the
+        # one node. The decode is not a node of its own because a node's output
+        # is kept for the whole execution, and a decoded pass is the largest
+        # thing in the render — see `MiniMaxH3Reel`. What travels the wire from
+        # here is a path and a frame count.
+        #
+        # The trim is the runs this pass shares with its neighbours: the one it
+        # inherited at its head, the clip's opening it runs into at its tail.
+        # Both are re-generated here and would otherwise play twice. It is also
+        # what later seams inherit from — their tail is identical either way,
+        # and this is the pass as delivered.
+        written = graph.node(
+            REEL_NODE, samples=sampled.out(0), vae=links.vae, audio_vae=links.audio_vae,
+            **({"head": one.feather} if one.feather > 1 else {}),
+            **({"tail": one.ends_feather} if one.ends_feather > 1 else {}),
+            **({"reel": reel} if reel is not None else {}))
+        reel = written.out(0)
+        decoded.append(("pass", written.out(1)))
 
     emit_tail(graph, reel, unique_id, filename_prefix)
     return graph

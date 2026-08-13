@@ -15,11 +15,11 @@ runs short, and re-running an evicted join means re-running what fed it, which
 upstream of a join is a KSampler.
 
 Nothing about a video file needs that. An mp4 is written frame by frame, so the
-parts only ever have to be *reachable in order* — never adjacent in memory. So
-the passes are collected into a reel (`MiniMaxH3Reel`, a list of references
-that copies nothing) and this module walks it, encoding each part into one open
-container. Peak memory is the passes themselves, with no concatenation buffer
-at all, and the frames of a part are released as the encoder consumes them.
+parts only ever have to be *reachable in order* — never adjacent in memory, and
+never all at once. So the passes are collected into a reel (`MiniMaxH3Reel`, a
+list of parts that copies nothing) and this module walks it, encoding each part
+into one open container. No concatenation buffer, and no pass resident either:
+each one was written to disk as it decoded and is read back a frame at a time.
 
 Ours rather than core's `VideoFromComponents.save_to`, which this is otherwise
 a close copy of: that one takes a single tensor, so using it would mean
@@ -28,14 +28,22 @@ retires the CRF version gate — `save_to` only learned `crf` in ComfyUI 0.29 an
 the save node had to refuse a quality setting it could not honour on anything
 older. This one always can.
 
-A part is either the tensors a pass decoded to, or **a file to splice** —
-supplied footage, which is never decoded into the reel at all. At 12.4 MB a
-frame, materialising two minutes of someone's mp4 so the encoder has something
-to re-encode would cost 35 GB to say nothing; it is demuxed, conformed and
-re-encoded a frame at a time into the same streams instead, so a five-minute
-clip costs what a five-second one does. What the *seams* need out of a clip —
-its first frame, its last feathered run — is a separate bounded decode that
-never comes through here.
+Every part is a file, and neither kind is ever held whole.
+
+A **generated pass** was decoded, trimmed and written out by `spill.py`, and
+comes through as 8-bit frames on disk that this module memmaps and hands to the
+encoder one at a time. That is what stops a pass from having to stay in memory
+from its own decode until the save node runs — a minute of 768p video is 18 GB
+of float32, and the passes all overlap in time because the file is written from
+all of them at the end.
+
+A **supplied clip** is a file the user brought, and is never decoded at all. At
+12.4 MB a frame, materialising two minutes of someone's mp4 so the encoder has
+something to re-encode would cost 35 GB to say nothing; it is demuxed,
+conformed and re-encoded a frame at a time into the same streams instead, so a
+five-minute clip costs what a five-second one does. What the *seams* need out
+of either kind — a first frame, a last feathered run — is a separate bounded
+read that never comes through here.
 
 The audio is written part by part too, and each part's soundtrack is held to
 its own picture's length. That is not tidiness: the parts are laid end to end,
@@ -51,6 +59,8 @@ from fractions import Fraction
 
 import numpy as np
 import torch
+
+from . import spill
 
 # The layouts PyAV names, by channel count. Anything else is refused rather
 # than guessed at: picking a layout decides which speaker each channel goes to.
@@ -83,15 +93,12 @@ def decode_channels(vae):
 
 
 def is_clip(part):
-    """Whether a reel part is a file to splice rather than frames to write.
+    """Whether a reel part is footage to splice rather than a pass to play back.
 
-    A generated pass arrives as the tensors its decoders produced. Supplied
-    footage arrives as a path and a window, and is *never* decoded into the
-    reel: at 12.4 MB a frame, holding two minutes of it to hand the encoder
-    something to re-encode would cost 35 GB to say nothing. It is demuxed,
-    scaled and re-encoded a frame at a time into the same container instead —
-    see `_write_clip`. What the seams need out of it (the first frame, the last
-    feathered run) is a separate, bounded decode that never comes through here.
+    Supplied footage arrives as a path and a window and is re-encoded straight
+    into the container — see `_write_clip`. A generated pass arrives as
+    `spill.py`'s 8-bit frames, which are already in the encoder's own currency
+    and only have to be read in order — see `_write_pass`.
     """
     return "clip" in part
 
@@ -101,7 +108,7 @@ def _geometry(part):
         # A clip is scaled to the canvas on the way in, so what it will be is
         # what the graph told it to be — there is nothing decoded yet to measure.
         return int(part["clip"]["width"]), int(part["clip"]["height"])
-    return int(part["images"].shape[2]), int(part["images"].shape[1])
+    return int(part["pass"]["width"]), int(part["pass"]["height"])
 
 
 def reel_geometry(parts):
@@ -143,12 +150,11 @@ def _audio_format(parts):
                 continue
             part_rate = int(part["clip"]["rate"])
             part_channels = int(part["clip"]["channels"])
+        elif "audio_path" in part["pass"]:
+            part_rate = int(part["pass"]["rate"])
+            part_channels = int(part["pass"]["channels"])
         else:
-            audio = part.get("audio")
-            if audio is None:
-                continue
-            part_rate = int(audio["sample_rate"])
-            part_channels = int(audio["waveform"].shape[1])
+            continue
         if rate is None:
             rate, channels = part_rate, part_channels
         elif (part_rate, part_channels) != (rate, channels):
@@ -208,17 +214,24 @@ def _mux_sound(av, target, waveform, at):
         target.output.mux(target.audio.encode(sound))
 
 
-def _write_frames(av, target, part, at_frame, at_sample):
-    """A generated pass: the tensors its decoders produced. -> (frames, samples)."""
-    images = part["images"]
-    for index in range(images.shape[0]):
-        array = (images[index] * 255).clamp(0, 255).byte().cpu().numpy()
-        frame = av.VideoFrame.from_ndarray(array, format="rgb24")
+def _write_pass(av, target, spec, at_frame, at_sample):
+    """A generated pass, read back off disk. -> (frames, samples).
+
+    The frames come through a memmap and are already the 8-bit RGB the encoder
+    wants, so a frame is paged in, encoded and dropped — the pass is never
+    resident, whatever its length. `spill.py` owns the format; this end only
+    reads it.
+    """
+    data = spill.open_frames(spec)
+    count = int(spec["frames"])
+    for index in range(count):
+        frame = av.VideoFrame.from_ndarray(
+            np.ascontiguousarray(data[index]), format="rgb24")
         frame = frame.reformat(format=target.pix_fmt)
         frame.pts = at_frame + index
         frame.time_base = target.video_time_base
         target.output.mux(target.video.encode(frame))
-    count = int(images.shape[0])
+    del data
 
     if target.audio is None:
         return count, 0
@@ -227,9 +240,15 @@ def _write_frames(av, target, part, at_frame, at_sample):
     # own length, which is the only thing that keeps the parts after it where
     # they belong.
     wanted = int(round(count / float(target.frame_rate) * target.rate))
-    sound_in = part.get("audio")
-    waveform = (sound_in["waveform"][0].float().cpu() if sound_in is not None
-                else torch.zeros(target.channels, 0))
+    if "audio_path" in spec:
+        # Copied off the map rather than aliased: `_fit` may pad it, and the
+        # chunks handed to the encoder outlive this line. Sound is three orders
+        # of magnitude smaller than the picture it goes with.
+        waveform = torch.from_numpy(np.array(
+            np.memmap(spec["audio_path"], dtype=np.float32, mode="r",
+                      shape=(int(spec["channels"]), int(spec["samples"])))))
+    else:
+        waveform = torch.zeros(target.channels, 0)
     _mux_sound(av, target, _fit(waveform, wanted), at_sample)
     return count, wanted
 
@@ -402,7 +421,7 @@ def _clip_sound(av, path, spec, start, duration, target):
 def write(path, parts, fps, crf, metadata=None):
     """Write a reel to `path` as one H.264/AAC mp4. -> (width, height).
 
-    `parts` is the reel: `[{"images": IMAGE, "audio": AUDIO or None}, ...]` in
+    `parts` is the reel: `[{"pass": spill spec} | {"clip": clip spec}, ...]` in
     play order. One container, one video stream and one audio stream, opened
     once and fed part by part — the encoder is never flushed between parts, so
     what comes out is one continuous stream rather than files stitched together.
@@ -449,8 +468,8 @@ def write(path, parts, fps, crf, metadata=None):
                 frames, samples = _write_clip(av, target, part["clip"],
                                               written_frames, written_samples)
             else:
-                frames, samples = _write_frames(av, target, part,
-                                                written_frames, written_samples)
+                frames, samples = _write_pass(av, target, part["pass"],
+                                              written_frames, written_samples)
             written_frames += frames
             written_samples += samples
 

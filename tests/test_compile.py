@@ -697,7 +697,7 @@ check("an unmerged strip snaps every card",
       compiler.timeline_frames({"segments": [segment(**{"duration_s": 5})] * 3}),
       3 * canvas.frames_for_seconds(5))
 
-# A feathered seam re-generates its inherited run and SeamTrim drops it, so those
+# A feathered seam re-generates its inherited run and the reel node drops it, so those
 # frames are sampled but never delivered — and the finished length has to say so.
 feathered = {"segments": [segment(),
                           segment(**{"continue": True, "feather": 22})]}

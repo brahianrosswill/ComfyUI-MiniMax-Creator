@@ -220,7 +220,8 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
             # End-aligned: the clip's first frames occupy this segment's last
             # ones, so the motion runs through the cut instead of stopping at
             # it. Those frames are re-generated here and trimmed off the tail
-            # after decode — `MiniMaxH3SeamTrim` — so the clip plays them once.
+            # before the pass is written out — `MiniMaxH3Reel` — so the clip
+            # plays them once.
             keyframes.extend(_context_keyframes(
                 vae, head[:compiled.ends_feather], compiled.ends_feather,
                 at=frame_count - compiled.ends_feather))

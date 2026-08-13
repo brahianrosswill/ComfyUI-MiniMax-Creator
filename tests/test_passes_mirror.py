@@ -121,7 +121,7 @@ for (render, flags, feathers), seen in zip(CASES, mirror):
     payloads = compiler.timeline_payloads(data)
     check(f"{name}: generations", len(seen["passes"]), len(payloads))
     # The finished length: snapped per pass rather than per segment, less what
-    # each feathered seam re-generates and SeamTrim then drops. This is the
+    # each feathered seam re-generates and the reel node then drops. This is the
     # number `MAX_TIMELINE_FRAMES` is checked against, so the two halves
     # disagreeing here means a strip the bar calls legal is refused at queue
     # time — or worse, the reverse.

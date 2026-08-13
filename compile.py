@@ -1119,7 +1119,7 @@ def timeline_runs(data, segments=None):
 
 def timeline_frames(data, segments=None, runs=None):
     """The frames the finished clip holds: every pass's own, less what each seam
-    re-generates and `MiniMaxH3SeamTrim` then drops.
+    re-generates and `MiniMaxH3Reel` then trims off before writing the pass out.
 
     Counted per pass rather than per card because a pass is what gets snapped to
     the 17n+5 grid — a run of three five-second cards is one 362-frame generation,

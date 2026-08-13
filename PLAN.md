@@ -135,10 +135,11 @@ for you. Everything else in this package exists to support that one gesture.
   of it.
 
   The chained path already has the shape for it. Everything downstream of a
-  pass reads one currency — the decoded `(images, audio)` pair — so a clip card
-  is a pass that produces one without a sampler in front of it, and
-  `MiniMaxH3LastFrame`, `MiniMaxH3AudioTail` and the feather machinery never ask
-  where a tensor came from. What is new is a card with no request in it, the
+  pass read one currency — the decoded `(images, audio)` pair — so a clip card
+  is a pass that produces one without a sampler in front of it, and the
+  last-frame, audio-tail and feather machinery never asked where a tensor came
+  from. (Phase 9 below changed that currency to a file, and a clip became the
+  second kind of one.) What is new is a card with no request in it, the
   seam pointing *backwards*, and the memory.
 
   - [x] **The tail.** `mux.py` and `MiniMaxH3Reel`, replacing the pairwise join.
@@ -151,7 +152,7 @@ for you. Everything else in this package exists to support that one gesture.
   - [x] **The seams, both ways.** `MiniMaxH3ClipFrames` / `MiniMaxH3ClipAudio`
     read the head or the tail of the clip's own window, so a generation after
     it continues from it and a generation before it ends on it. Blend and sound
-    work at both ends; `MiniMaxH3SeamTrim` grew a `tail`.
+    work at both ends; the trim grew a `tail`.
   - [x] **What it refuses, and where.** Merging and one-pass are refused in
     `timeline_runs` and prevented in `syncTimeline`; the backwards seam is a
     dead control naming the shot that blocks it; the refiner skips clip cards
@@ -167,6 +168,41 @@ for you. Everything else in this package exists to support that one gesture.
   render's codec and canvas and could be stream-copied — a real optimisation
   and a second path to get wrong, so it is deliberately absent from the first
   cut. And the frontend's clip work has no tests of its own; see below.
+
+- [x] **9 — The passes go to disk.** `spill.py`, and the decode moved inside
+  `MiniMaxH3Reel`. The reel took away the *intermediates*; this takes away the
+  passes themselves.
+
+  The reel already meant nothing concatenated, but every pass still had to
+  survive from its own decode until the save node ran, because the file is
+  written from all of them at the end. ComfyUI keeps a node's output for the
+  whole execution, so any node that *returns* a decoded pass holds it: a minute
+  of 768p video is 18 GB of float32 resident at once. On a box streaming a
+  staged model out of host RAM — 40 GB of it, in the report that prompted this
+  — that is an OOM kill after an hour of sampling, on a render that was going
+  to work.
+
+  So the decode happens inside the reel node and the tensors never leave it:
+  `spill.py` writes 8-bit frames and float32 sound straight out, and what
+  travels the wire is a path and a frame count. `mux.py` memmaps the parts back
+  a frame at a time, and a seam reads its own width out of the same file.
+  Peak memory is one pass, whatever the strip is. 8-bit costs the file nothing
+  — it is what the encoder was always given — and it is what a keyframe
+  attached from a PNG has always been.
+
+  What went with it: `MiniMaxH3LastFrame`, `MiniMaxH3AudioTail` and
+  `MiniMaxH3SeamTrim`. All three took tensors that no longer exist as node
+  outputs; `MiniMaxH3PassFrames`, `MiniMaxH3PassAudio` and the reel node's own
+  `head`/`tail` do the same jobs against the spill. A supplied clip is
+  unchanged and now simply the second kind of file part.
+
+  **Not done: the resume this makes possible.** Spills live under ComfyUI's
+  temp, which core wipes on restart, so a crashed render still costs every pass.
+  Naming a spill by a hash of what determines its pixels — payload, sampling,
+  weights, and the key of the pass it continues from — and looking for it in
+  `render.emit` before emitting the sampler would make a re-run skip everything
+  that has not changed. That is a store with a real invalidation problem in it
+  and it wants deciding on its own, not smuggling in behind a memory fix.
 
 ## Known rough edges in a chained timeline
 
@@ -282,8 +318,10 @@ and no ComfyUI. Verify a change to the ordering contract by mutating
 not protecting anything. The same applies to `refine.normalize_handles`, whose
 failure mode is a prompt that still compiles and binds to the wrong tensor.
 
-`tests/test_mux.py` needs the ComfyUI venv but no install — it loads `mux.py`
-by path, since writing a container needs av, torch and numpy and nothing else.
+`tests/test_mux.py` and `tests/test_spill.py` need the ComfyUI venv but no
+install — they load `mux.py` and `spill.py` by path, since writing a container
+and writing a pass need av, torch and numpy and nothing else. `spill.directory`
+is the one thing either wants from ComfyUI, and the harness answers it.
 It writes real reels and reads the mp4 back, because a container written part by
 part fails by *playing wrong* rather than by raising: both halves of `_fit` and
 the running sample cursor were mutated to confirm the suite catches them.

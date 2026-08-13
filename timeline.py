@@ -49,12 +49,16 @@ from comfy_api.latest import io
 
 from . import (accel, canvas, compile as compiler, encode as encoder, lora,
                media, models, mux, outputs, payload as payload_repair, render,
-               settings)
+               settings, spill)
 
-# The reel's own socket type. A list of `{"images", "audio"}` in play order —
-# see `MiniMaxH3Reel` for why the passes travel as a list of references rather
-# than as one concatenated clip.
+# The reel's own socket type: the parts of the finished video in play order,
+# each of them a file — a pass `spill.py` wrote, or a clip the user supplied.
+# See `MiniMaxH3Reel` for why a pass is on disk rather than in the socket.
 REEL_TYPE = "MMC_REEL"
+
+# One spilled pass, as the seams beside it read it. Its own type rather than a
+# string, so a graph cannot wire a clip's spec where a pass's belongs.
+PASS_TYPE = "MMC_PASS"
 
 DEFAULT_DATA = json.dumps({
     "version": 2,
@@ -419,154 +423,38 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
         return io.NodeOutput(model, cond, latent)
 
 
-class MiniMaxH3AudioTail(io.ComfyNode):
-    """The end of a decoded soundtrack — what the next segment's sound continues from.
-
-    The picture's counterpart is one frame; sound's is a stretch of it, because a
-    single sample says nothing about a room. How long is `compile.DEFAULT_AUDIO_TAIL_S`
-    and why it is short is argued there.
-    """
-
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="MiniMaxH3AudioTail",
-            display_name="MiniMax H3 Audio Tail",
-            category="MiniMax/internal",
-            description="The last few seconds of a decoded soundtrack, for the next timeline segment.",
-            is_dev_only=True,
-            inputs=[
-                io.Audio.Input("audio"),
-                io.Float.Input("seconds", default=compiler.DEFAULT_AUDIO_TAIL_S,
-                               min=0.1, max=compiler.MAX_AUDIO_TAIL_S, step=0.1),
-            ],
-            outputs=[io.Audio.Output()],
-        )
-
-    @classmethod
-    def execute(cls, audio, seconds) -> io.NodeOutput:
-        waveform = audio["waveform"]
-        rate = int(audio["sample_rate"])
-        wanted = max(1, int(round(float(seconds) * rate)))
-        if waveform.shape[-1] == 0:
-            raise ValueError("no audio to continue from")
-        # A segment shorter than the tail hands over everything it has rather
-        # than being padded: silence we invented is not what came before.
-        return io.NodeOutput({"waveform": waveform[..., -wanted:], "sample_rate": rate})
-
-
-class MiniMaxH3LastFrame(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="MiniMaxH3LastFrame",
-            display_name="MiniMax H3 Last Frame",
-            category="MiniMax/internal",
-            description="The final frames of a decoded batch — what the next timeline segment continues from.",
-            is_dev_only=True,
-            inputs=[
-                io.Image.Input("image"),
-                # A feathered seam inherits a run instead of a single frame.
-                # Optional so a classic seam's graph — and its cache keys —
-                # look exactly as they always have.
-                io.Int.Input("count", default=1, min=1, max=64, optional=True),
-            ],
-            outputs=[io.Image.Output()],
-        )
-
-    @classmethod
-    def execute(cls, image, count=1) -> io.NodeOutput:
-        count = max(1, int(count))
-        if image.shape[0] < count:
-            # Padding or repeating frames would pin motion that never happened;
-            # the seam's width has to come down instead.
-            raise ValueError(
-                f"the source segment has {image.shape[0]} frames and this seam "
-                f"inherits {count} — shorten the feather or lengthen the source"
-                if image.shape[0] else "no frames to continue from"
-            )
-        return io.NodeOutput(image[-count:])
-
-
-class MiniMaxH3SeamTrim(io.ComfyNode):
-    """A blended segment minus the runs it shares with its neighbours.
-
-    A blend pins context frames on this segment's own timeline and
-    re-generates them there, so an untrimmed segment would play them twice —
-    once here and once in the pass they came from. `frames` is the run
-    inherited from the pass in front, at the head; `tail` is the opening of a
-    supplied clip this segment runs into, at the end. Trimmed after decode —
-    picture and the matching stretch of sound together, so the two stay in
-    phase across the cut.
-    """
-
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="MiniMaxH3SeamTrim",
-            display_name="MiniMax H3 Seam Trim",
-            category="MiniMax/internal",
-            description="Drops a blended seam's re-generated overlap off a decoded segment.",
-            is_dev_only=True,
-            inputs=[
-                io.Image.Input("images"),
-                io.Audio.Input("audio"),
-                io.Int.Input("frames", default=0, min=0, max=64),
-                # Optional, so a head-only trim's node inputs — and its cache
-                # key — are byte-identical to what they were before the seam
-                # could run the other way.
-                io.Int.Input("tail", default=0, min=0, max=64, optional=True),
-            ],
-            outputs=[io.Image.Output(display_name="images"), io.Audio.Output(display_name="audio")],
-        )
-
-    @classmethod
-    def execute(cls, images, audio, frames, tail=0) -> io.NodeOutput:
-        frames, tail = max(0, int(frames)), max(0, int(tail))
-        if not frames and not tail:
-            return io.NodeOutput(images, audio)
-        if images.shape[0] <= frames + tail:
-            # compile refuses a blend of half the segment or more, so hitting
-            # this means the graph was built against different arithmetic.
-            raise ValueError(
-                f"cannot trim {frames + tail} blended frames off a "
-                f"{images.shape[0]}-frame segment"
-            )
-        rate = int(audio["sample_rate"])
-        head_samples = int(round(frames / canvas.FPS * rate))
-        # Counted off the end rather than as an absolute index: the decoded
-        # soundtrack is the same span as the picture but not the same length,
-        # and an index computed from the frame count would drift by the
-        # rounding.
-        tail_samples = int(round(tail / canvas.FPS * rate))
-        waveform = audio["waveform"][..., head_samples:]
-        if tail_samples:
-            waveform = waveform[..., :-tail_samples]
-        return io.NodeOutput(
-            images[frames:images.shape[0] - tail] if tail else images[frames:],
-            {"waveform": waveform, "sample_rate": rate},
-        )
-
-
 class MiniMaxH3Reel(io.ComfyNode):
-    """The passes so far, as a list of what to play — not as one clip.
+    """One pass: decoded, trimmed, written to disk, added to the reel.
 
-    This is what replaced `MiniMaxH3TimelineJoin`, and the difference is the
-    whole reason it exists. The join concatenated: it took two passes and
-    returned the tensor holding both, so folding N passes built N-1 running
-    totals and ComfyUI kept every one of them alive. Ten 768p passes came to
-    about 81 GB of intermediates on top of 15 GB of passes, which is O(N^2) in
-    the length of the piece.
+    Five things in one node, and the reason is memory. ComfyUI keeps every
+    node's output alive for the whole execution, so any node that *returns* a
+    decoded pass holds that pass until the render is over — and the render is
+    over when the save node has written every one of them. A minute of 768p
+    video is 18 GB of float32 held at once, on top of the weights, which on a
+    box streaming a staged model from host RAM is the difference between a
+    render and the OOM killer.
 
-    A reel copies nothing. It carries references to the tensors the decoders
-    already produced, in play order, and `mux.py` walks it writing one frame at
-    a time. So the fold costs a list, the file is written from parts that never
-    have to be adjacent in memory, and the peak is the passes themselves.
+    So the tensors never leave. They are decoded here, trimmed here, and
+    written straight out by `spill.py`; what this returns is a path and a frame
+    count. The pass exists in memory for the length of this call and is dropped
+    at the end of it, so the peak is one pass rather than all of them, whatever
+    the strip is.
+
+    This is the second half of retiring `MiniMaxH3TimelineJoin`. The join
+    concatenated — folding N passes built N-1 running totals, all kept alive,
+    about 81 GB of intermediates for ten 768p passes on top of the 15 GB of
+    passes themselves. The reel took the intermediates away by carrying
+    references instead of a total; this takes the passes away too.
 
     Chained the same way the join was — each reel node takes the one before it —
     because that keeps the growth an ordinary graph edge with no variadic
     inputs, and it keeps a pass's cache key naming exactly the passes in front
     of it.
+
+    The decoders are core's own, called rather than copied: `VAEDecode`'s nested
+    unbind and 5-dim reshape, and `vae_decode_audio`'s attenuation of anything
+    hot enough to clip, are H3's decode contract and this node has no business
+    having a second opinion about them.
     """
 
     @classmethod
@@ -575,23 +463,132 @@ class MiniMaxH3Reel(io.ComfyNode):
             node_id="MiniMaxH3Reel",
             display_name="MiniMax H3 Reel",
             category="MiniMax/internal",
-            description="Adds one pass's frames and sound to the reel the save node writes.",
+            description="Decodes one pass, writes it to disk and adds it to the reel.",
             is_dev_only=True,
             inputs=[
-                io.Image.Input("images"),
-                io.Audio.Input("audio"),
+                io.Latent.Input("samples"),
+                io.Vae.Input("vae"),
+                io.Vae.Input("audio_vae"),
+                # The runs this pass shares with its neighbours, dropped before
+                # anything is written: a blend re-generates the moment it
+                # inherited, and an untrimmed pass would play it twice. `head`
+                # is the run taken from the pass in front, `tail` the opening of
+                # a supplied clip this one runs into. Optional so a pass with no
+                # blend on it has the node inputs — and the cache key — it had
+                # before either could happen.
+                io.Int.Input("head", default=0, min=0, max=64, optional=True),
+                io.Int.Input("tail", default=0, min=0, max=64, optional=True),
                 io.Custom(REEL_TYPE).Input("reel", optional=True,
                     tooltip="The passes in front of this one. Absent on the first."),
             ],
-            outputs=[io.Custom(REEL_TYPE).Output(display_name="reel")],
+            outputs=[io.Custom(REEL_TYPE).Output(display_name="reel"),
+                     io.Custom(PASS_TYPE).Output(display_name="pass")],
         )
 
     @classmethod
-    def execute(cls, images, audio, reel=None) -> io.NodeOutput:
+    def execute(cls, samples, vae, audio_vae, head=0, tail=0, reel=None) -> io.NodeOutput:
+        import nodes
+        from comfy_extras.nodes_audio import vae_decode_audio
+
+        images = nodes.VAEDecode().decode(vae, samples)[0]
+        audio = vae_decode_audio(audio_vae, samples)
+
+        head, tail = max(0, int(head)), max(0, int(tail))
+        if head or tail:
+            if images.shape[0] <= head + tail:
+                # compile refuses a blend of half the segment or more, so
+                # hitting this means the graph was built against different
+                # arithmetic.
+                raise ValueError(
+                    f"cannot trim {head + tail} blended frames off a "
+                    f"{images.shape[0]}-frame pass")
+            rate = int(audio["sample_rate"])
+            # Counted off the end rather than as an absolute index: the decoded
+            # soundtrack is the same span as the picture but not the same
+            # length, and an index computed from the frame count would drift by
+            # the rounding.
+            head_samples = int(round(head / canvas.FPS * rate))
+            tail_samples = int(round(tail / canvas.FPS * rate))
+            waveform = audio["waveform"][..., head_samples:]
+            if tail_samples:
+                waveform = waveform[..., :-tail_samples]
+            images = images[head:images.shape[0] - tail] if tail else images[head:]
+            audio = {"waveform": waveform, "sample_rate": rate}
+
+        written = spill.write(images, audio, canvas.FPS)
+        # Dropped before returning rather than left to the frame's teardown:
+        # what this node exists to guarantee is that nothing holds a pass once
+        # it is on disk, and the largest thing in this scope is that pass.
+        del images, audio
+
         # A new list rather than an append: the reel this was handed is another
         # node's cached output, and growing it in place would rewrite history
         # every time a later pass re-ran.
-        return io.NodeOutput([*(reel or []), {"images": images, "audio": audio}])
+        return io.NodeOutput([*(reel or []), {"pass": written}], written)
+
+
+class MiniMaxH3PassFrames(io.ComfyNode):
+    """The frames a seam inherits from the pass in front of it.
+
+    A generation continuing from an earlier one starts on its last frame — or,
+    blended, its last run of them. Those come back off the spill rather than
+    out of a tensor somebody kept: the pass was written to disk the moment it
+    decoded, and this reads the seam's width out of it, one frame or at most
+    39, however long the pass is.
+
+    They come back as 8-bit, which is what the spill stores and what the file
+    was always going to be written as. That is the fidelity a keyframe attached
+    from a PNG has always had, and it is the VAE encoder's ordinary diet.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3PassFrames",
+            display_name="MiniMax H3 Pass Frames",
+            category="MiniMax/internal",
+            description="The final frames of a decoded pass — what the next one continues from.",
+            is_dev_only=True,
+            inputs=[
+                io.Custom(PASS_TYPE).Input("source"),
+                # A feathered seam inherits a run instead of a single frame.
+                io.Int.Input("count", default=1, min=1, max=64, optional=True),
+            ],
+            outputs=[io.Image.Output()],
+        )
+
+    @classmethod
+    def execute(cls, source, count=1) -> io.NodeOutput:
+        return io.NodeOutput(spill.frames(source, int(count), "tail"))
+
+
+class MiniMaxH3PassAudio(io.ComfyNode):
+    """The end of a pass's soundtrack — what the next one's sound continues from.
+
+    The picture's counterpart is one frame; sound's is a stretch of it, because
+    a single sample says nothing about a room. How long is
+    `compile.DEFAULT_AUDIO_TAIL_S` and why it is short is argued there.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3PassAudio",
+            display_name="MiniMax H3 Pass Audio",
+            category="MiniMax/internal",
+            description="The last few seconds of a decoded pass's sound, for the next one.",
+            is_dev_only=True,
+            inputs=[
+                io.Custom(PASS_TYPE).Input("source"),
+                io.Float.Input("seconds", default=compiler.DEFAULT_AUDIO_TAIL_S,
+                               min=0.1, max=compiler.MAX_AUDIO_TAIL_S, step=0.1),
+            ],
+            outputs=[io.Audio.Output()],
+        )
+
+    @classmethod
+    def execute(cls, source, seconds) -> io.NodeOutput:
+        return io.NodeOutput(spill.sound(source, float(seconds), "tail"))
 
 
 class MiniMaxH3ClipReel(io.ComfyNode):
@@ -658,8 +655,8 @@ class MiniMaxH3ClipReel(io.ComfyNode):
 class MiniMaxH3ClipFrames(io.ComfyNode):
     """The frames a seam beside a supplied clip inherits.
 
-    The counterpart to `MiniMaxH3LastFrame`, for a pass that has no decoded
-    frames because it was never generated. `at` says which end: the tail is
+    The counterpart to `MiniMaxH3PassFrames`, for a pass that was never
+    generated and so has no spill to read back. `at` says which end: the tail is
     what a generation after the clip continues from, the head is what a
     generation *before* it ends on.
 
@@ -813,7 +810,7 @@ class MiniMaxH3Save(io.ComfyNode):
 
 # Registered by `creator_node.MiniMaxCreatorExtension` — one extension for the
 # package, so there is one place that says what this node pack contains.
-NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3LastFrame,
-         MiniMaxH3SeamTrim, MiniMaxH3AudioTail, MiniMaxH3Reel,
+NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3Reel,
+         MiniMaxH3PassFrames, MiniMaxH3PassAudio,
          MiniMaxH3ClipReel, MiniMaxH3ClipFrames, MiniMaxH3ClipAudio,
          MiniMaxH3Save]

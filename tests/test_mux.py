@@ -23,27 +23,44 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _load():
-    """`mux.py` alone, by path.
+    """`mux.py` and the `spill.py` it reads its parts back through.
 
-    It imports nothing from the package and nothing from ComfyUI — writing a
-    container needs av, torch and numpy and no more than that — so it is loaded
-    on its own rather than through `__init__`, which would drag in the nodes and
-    with them a whole install.
+    Neither imports ComfyUI — writing a container needs av, torch and numpy and
+    no more than that — so they are loaded into a stand-in package rather than
+    through `__init__`, which would drag in the nodes and with them a whole
+    install. The one thing `spill` does want from ComfyUI is where to put its
+    files, and that is `directory()`, which the harness answers below.
     """
-    spec = importlib.util.spec_from_file_location("mmc_mux", os.path.join(ROOT, "mux.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    import types
+
+    package = types.ModuleType("mmcmux")
+    package.__path__ = [ROOT]
+    sys.modules["mmcmux"] = package
+    loaded = []
+    for name in ("spill", "mux"):
+        spec = importlib.util.spec_from_file_location(
+            f"mmcmux.{name}", os.path.join(ROOT, f"{name}.py"))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[f"mmcmux.{name}"] = module
+        spec.loader.exec_module(module)
+        loaded.append(module)
+    return loaded
 
 
 try:
     import av
     import torch
 
-    mux = _load()
+    spill, mux = _load()
 except Exception as exc:  # noqa: BLE001
     print(f"skipped: needs av and torch ({type(exc).__name__}: {exc})")
     sys.exit(0)
+
+# Where the spills go. ComfyUI's temp in a real run; a directory of our own
+# here, which is also what proves `directory()` is the only thing in `spill`
+# that knows about ComfyUI at all.
+SPILLS = tempfile.mkdtemp(prefix="mmc-spill-")
+spill.directory = lambda: SPILLS
 
 FAILURES = []
 FPS = 24
@@ -72,7 +89,11 @@ def expect_error(label, fn, fragment):
 
 
 def part(frames, seconds=None, level=0.5, size=(WIDTH, HEIGHT), rate=RATE, channels=2):
-    """One reel entry. `seconds=None` means no soundtrack at all.
+    """One reel entry: a pass, decoded and spilled. `seconds=None` means silent.
+
+    Written through `spill.write` rather than assembled as a dict, because the
+    format is the contract between the two modules and a hand-built spec would
+    only test this file's opinion of it.
 
     The picture is a flat grey at `level`, which is what makes a decoded frame
     identifiable: the parts are told apart by their brightness on the way back
@@ -80,11 +101,11 @@ def part(frames, seconds=None, level=0.5, size=(WIDTH, HEIGHT), rate=RATE, chann
     """
     width, height = size
     images = torch.full((frames, height, width, 3), float(level))
-    if seconds is None:
-        return {"images": images, "audio": None}
-    samples = int(round(seconds * rate))
-    return {"images": images,
-            "audio": {"waveform": torch.zeros(1, channels, samples), "sample_rate": rate}}
+    audio = None
+    if seconds is not None:
+        samples = int(round(seconds * rate))
+        audio = {"waveform": torch.zeros(1, channels, samples), "sample_rate": rate}
+    return {"pass": spill.write(images, audio, FPS)}
 
 
 def written(parts, crf=23):
@@ -280,7 +301,7 @@ expect_error("a layout with no name is refused rather than guessed at",
 # core's writer only learned the argument there. Writing the container here, it
 # is always honoured — and the check that it *is* is that the same reel comes
 # out a different size at a different CRF.
-noisy = [{"images": torch.rand(24, HEIGHT, WIDTH, 3), "audio": None}]
+noisy = [{"pass": spill.write(torch.rand(24, HEIGHT, WIDTH, 3), None, FPS)}]
 small = os.path.getsize(written(noisy, crf=40)[3])
 large = os.path.getsize(written(noisy, crf=8)[3])
 if not small < large:

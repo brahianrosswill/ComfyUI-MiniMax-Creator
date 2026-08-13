@@ -124,8 +124,8 @@ def encode(compiled, tail_frames=64):
     """What the segment node hands the encoder, for this compiled seam.
 
     The soundtrack is exactly `compiled.audio_tail_s` long because that is what
-    the graph wires: `render.emit` passes that number to the AudioTail node, so
-    the encoder never sees more sound than compile decided on.
+    the graph wires: `render.emit` passes that number to the pass-audio node,
+    so the encoder never sees more sound than compile decided on.
     """
     clip, vae = Clip(), Vae()
     samples = max(1, round(compiled.audio_tail_s * AudioVae.audio_sample_rate))
