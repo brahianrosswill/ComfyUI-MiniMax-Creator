@@ -22,13 +22,20 @@ from comfy_extras.nodes_minimax_h3 import (
     CANVAS_MULTIPLE,
     FPS,
     REF_IMAGE_SHORT_EDGE,
-    MiniMaxH3ReferenceToVideo,
     _empty_av_latent,
     _resize,
     adapt_canvas,
 )
 
-_encode_ref_audio = MiniMaxH3ReferenceToVideo._encode_ref_audio
+# Two spellings of one function, because a pack does not choose which core its
+# users run. Core 2026-08-13 ("Add MiniMaxH3AddGuide", e01fb4c5) lifted this out
+# of the node class to module level; the body and the signature are the same on
+# both sides, so this is which import works, not which behaviour is wanted.
+try:
+    from comfy_extras.nodes_minimax_h3 import _encode_ref_audio
+except ImportError:  # core before 2026-08-13: a static method on the node
+    from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
+    _encode_ref_audio = MiniMaxH3ReferenceToVideo._encode_ref_audio
 
 # Where a timeline segment's inherited start frame arrives in `loaded`. It is the
 # previous segment's decoded last frame, so unlike every other entry it has no

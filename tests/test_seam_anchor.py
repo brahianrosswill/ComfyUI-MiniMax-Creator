@@ -142,8 +142,10 @@ def placed(values):
     """The repositioned layout, plus where the clip's own first frame sits."""
     keyframes = values.get("minimax_keyframes") or []
     refs = values.get("minimax_refs") or []
-    layout = PackedLayout(TEXT_LEN, 8, 4, 4, 12, keyframes=keyframes, refs=refs,
-                          frame_count=values.get("minimax_frame_count"))
+    # No `frame_count`: core took one until 2026-08-13, to work out where its
+    # only other legal anchor — the last frame — sat. It now anchors a keyframe
+    # at any index off `resolved_frame_index`, so the argument is gone.
+    layout = PackedLayout(TEXT_LEN, 8, 4, 4, 12, keyframes=keyframes, refs=refs)
     repair._reposition(layout, {"keyframes": keyframes, "refs": refs})
     return layout, repair._target_origin(layout)
 
