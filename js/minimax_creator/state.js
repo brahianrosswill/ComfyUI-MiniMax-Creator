@@ -637,6 +637,63 @@ const clampTail = (value) => {
   return Math.min(seconds, MAX_AUDIO_TAIL_S);
 };
 
+// ---- clip cards -------------------------------------------------------------
+//
+// A card that is not a generation: footage the user already has, cut into the
+// piece and played as it is. Mirrors compile.SEGMENT_KINDS.
+//
+// It is a card rather than a reference because it occupies time on the strip —
+// it has a length, a place in the order and seams on both sides of it, which
+// is exactly what a shot has. A reference clip is something a generation looks
+// at; this one is part of the finished video.
+
+export const SEGMENT_KINDS = ["shot", "clip"];
+
+/** Whether a card is supplied footage. Absent means a shot, which is every
+ *  card written before clips existed. */
+export const isClip = (segment) => segment?.kind === "clip";
+
+/** A clip card's length: its trim's, or the whole file's as the probe read it.
+ *  Not a setting — how much of the file plays is what decides it. */
+export function clipSeconds(segment) {
+  const trim = segment?.trim;
+  if (trim && Number.isFinite(trim.start) && Number.isFinite(trim.end) && trim.end > trim.start) {
+    return trim.end - trim.start;
+  }
+  return Number(segment?.duration_s) || 0;
+}
+
+/** Whether a clip card plays with its own sound. On unless the card says not:
+ *  a clip chosen for a moment of action is usually wanted for the sound of it. */
+export const clipSound = (segment) => segment?.sound !== false;
+
+/**
+ * A clip card, from what the picker and the probe route between them know.
+ *
+ * `width`/`height` are the file's own, and are what lets the timeline take its
+ * aspect from the footage without the backend opening the file. `has_audio` is
+ * the probe's too — a clip with no soundtrack cannot carry one across a seam,
+ * and the switch has to be able to say so rather than fail at queue time.
+ */
+export function clipSegment({ filename, duration, width, height, hasAudio }) {
+  return {
+    kind: "clip",
+    filename,
+    duration_s: Number(duration) || 0,
+    ...(width && height ? { width, height } : {}),
+    // Not serialized — a fact about the file, re-read when it is re-attached,
+    // and only ever used to grey out a control the file cannot honour.
+    has_audio: hasAudio !== false,
+    // The seam in front of a clip runs backwards: the shot before it ends on
+    // this clip's opening frame. Off on a new card, unlike a new shot's seam,
+    // because turning it on changes how the card *before* it is generated —
+    // it pins that generation's last frame, which a shot carrying references
+    // cannot do. A hard cut is the one default that is always available.
+    continue: false,
+    continue_audio: false,
+  };
+}
+
 export function emptySegment() {
   const state = emptyState();
   delete state.version;
@@ -715,7 +772,17 @@ export function emptyTimeline() {
  * Stripped again by `serializeTimeline` — the segments do not own it.
  */
 function syncCanvas(timeline) {
+  // A clip is not generated, so it cannot share a generation — neither by
+  // being merged into the pass in front of it nor by having a card merged into
+  // it. Cleared here rather than guarded at every read, the same way the seam
+  // flags on segment 1 are, so reordering cannot leave a merge behind that
+  // `compile.timeline_runs` would refuse the whole strip over.
+  timeline.segments.forEach((segment, index) => {
+    if (isClip(segment)) delete segment.merge;
+    if (index && isClip(timeline.segments[index - 1])) delete segment.merge;
+  });
   for (const segment of timeline.segments) {
+    if (isClip(segment)) continue;   // no canvas, no pool, no prompt to mirror
     segment.aspect = timeline.aspect;
     segment.short_edge = timeline.short_edge;
     segment.upscale = timeline.upscale;
@@ -754,6 +821,11 @@ function syncCanvas(timeline) {
     timeline.render = timeline.segments.every((segment, index) => !index || merged(segment))
       ? "single" : "chained";
   }
+  // A strip holding footage is never one pass, whatever the flags say: a clip
+  // is played rather than generated, so there is no single generation for the
+  // strip to collapse into. A timeline saved as one pass before a clip was cut
+  // into it opens as the chain it now is.
+  if (timeline.segments.some(isClip)) timeline.render = "chained";
   // A seam may name any earlier segment as its source; anything else — the
   // previous one included, which is what absence already means — is dropped.
   // Same policy as the flags: pruned here once rather than guarded at every
@@ -764,9 +836,27 @@ function syncCanvas(timeline) {
     // A feather the duration can no longer afford — the overlap is trimmed
     // off after decode, so it must stay under half the clip — is dropped the
     // same way, rather than left to fail at queue time.
-    if (segment.feather && 2 * segment.feather > framesForSeconds(segment.duration_s)) {
+    // A blend the segment it is generated in can no longer afford — the
+    // overlap is trimmed off after decode, so it must stay under half the
+    // clip — is dropped the same way, rather than left to fail at queue time.
+    // For a clip card the blend is spent by the card *before* it, since that
+    // is the generation re-making those frames.
+    if (segment.feather) {
+      const paying = isClip(segment) ? timeline.segments[index - 1] : segment;
+      if (!paying || isClip(paying)
+          || 2 * segment.feather > framesForSeconds(paying.duration_s)) {
+        delete segment.feather;
+      }
+    }
+    // Nothing runs into a clip that has no generation in front of it — two
+    // clips end to end have no sampler between them to condition.
+    if (isClip(segment) && (!index || isClip(timeline.segments[index - 1]))) {
+      segment.continue = false;
+      segment.continue_audio = false;
       delete segment.feather;
     }
+    // A clip with no soundtrack has none to carry backwards across the seam.
+    if (isClip(segment) && segment.has_audio === false) segment.continue_audio = false;
   });
   return timeline;
 }
@@ -806,6 +896,34 @@ export function parseTimeline(raw) {
       timeline.turbo = parseTurbo(timeline.turbo);
       const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
       timeline.segments = (segments.length ? segments : [{}]).map((raw) => {
+        // A clip card holds none of a generation's machinery — no prompt, no
+        // assets, no LoRAs — so it is read on its own terms rather than through
+        // `parseState`, which would fill it with fields that mean nothing here.
+        // The seam keys are still read below, because the seam in front of a
+        // clip is a seam like any other; only which way it runs is different.
+        if (raw?.kind === "clip") {
+          const segment = clipSegment({
+            filename: String(raw.filename ?? ""),
+            duration: Number(raw.duration_s) || 0,
+            width: Number(raw.width) || 0,
+            height: Number(raw.height) || 0,
+            // Unknown until the file is probed again. Assumed present so a
+            // stored sound seam is not silently dropped on load; the card
+            // re-probes and corrects it.
+            hasAudio: true,
+          });
+          if (raw.sound === false) segment.sound = false;
+          const start = Number(raw.trim?.start);
+          const end = Number(raw.trim?.end);
+          if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+            segment.trim = { start, end };
+          }
+          segment.continue = raw.continue === true;
+          segment.continue_audio = raw.continue_audio === true;
+          const width = Number(raw.feather);
+          if (FEATHER_GRID.includes(width) && width > 1) segment.feather = width;
+          return segment;
+        }
         const segment = parseState(JSON.stringify(raw ?? {}));
         delete segment.version;
         // The weights are the timeline's. A segment carrying its own would be a
@@ -868,6 +986,27 @@ export function serializeTimeline(timeline) {
     ...serializeModels(timeline.models),
     ...serializeTurbo(timeline.turbo),
     segments: timeline.segments.map((segment, index) => {
+      if (isClip(segment)) {
+        return {
+          kind: "clip",
+          filename: segment.filename,
+          duration_s: round2(segment.duration_s),
+          ...(segment.width && segment.height
+            ? { width: segment.width, height: segment.height } : {}),
+          ...(segment.trim ? { trim: { start: round2(segment.trim.start),
+                                       end: round2(segment.trim.end) } } : {}),
+          // Only the deliberate choice is written: sound on is what a clip
+          // comes with, so an absent key reads as it always would.
+          ...(clipSound(segment) ? {} : { sound: false }),
+          // The seam in front of it, which acts on the card behind it. Same
+          // keys as any other seam, and never on the first card — there is
+          // nothing in front of it to run into this one.
+          ...(index > 0 && segment.continue ? { continue: true } : {}),
+          ...(index > 0 && segment.continue_audio ? { continue_audio: true } : {}),
+          ...(index > 0 && segment.continue && feather(segment) > 1
+            ? { feather: feather(segment) } : {}),
+        };
+      }
       const out = serializeCommon(segment);
       // Which pass this segment belongs to, said as "the same one as the
       // segment before me" — so a pass survives inserting, moving and deleting
@@ -913,10 +1052,15 @@ export function cutTimes(segments) {
   let total = 0;
   for (const segment of segments) {
     at.push(total);
-    total += Number(segment.duration_s) || 0;
+    total += segmentSeconds(segment);
   }
   return { at, total };
 }
+
+/** A card's length. A clip's is its window's — see `clipSeconds`. Mirrors
+ *  `compile._duration_seconds`. */
+export const segmentSeconds = (segment) =>
+  (isClip(segment) ? clipSeconds(segment) : Number(segment.duration_s) || 0);
 
 /** `5` -> `"00:05.000"`. Mirrors `contextir.shot_time`, which writes the real one. */
 export function shotTime(seconds) {
@@ -934,13 +1078,28 @@ export function shotTime(seconds) {
  * every one its own pass, every one snapped alone.
  */
 export function timelineFrames(timeline) {
-  return passes(timeline).reduce((total, pass, index) => {
+  const all = passes(timeline);
+  return all.reduce((total, pass, index) => {
     const head = pass.segments[0];
-    // A feathered seam re-generates its inherited run at the pass's head and
+    // A blended seam re-generates its inherited run at the pass's head and
     // trims it off after decode, so those frames are sampled but never
     // delivered. Only between passes: a seam inside one does not exist.
-    const overlap = index > 0 && continues(head) && feather(head) > 1 ? feather(head) : 0;
-    return total + framesForSeconds(cutTimes(pass.segments).total) - overlap;
+    //
+    // Never on a clip: its seam flags describe the blend running *backwards*
+    // into it, which is paid for by the pass in front and is subtracted there.
+    // Read here as well, they would take it off the strip twice.
+    const overlap = index > 0 && !isClip(head) && continues(head) && feather(head) > 1
+      ? feather(head) : 0;
+    // ...and the same at the far end, where a clip in front of the next pass
+    // owns the blend: those frames are re-generated at *this* pass's tail.
+    const after = all[index + 1]?.segments[0];
+    const runs = after && isClip(after) && continues(after) && feather(after) > 1
+      ? feather(after) : 0;
+    // A clip is played, not sampled, so its length is its own — there is no
+    // 17n+5 grid to snap it to. Mirrors `compile.timeline_frames`.
+    const seconds = cutTimes(pass.segments).total;
+    const own = isClip(head) ? Math.round(seconds * FPS) : framesForSeconds(seconds);
+    return total + own - overlap - runs;
   }, 0);
 }
 
@@ -1817,4 +1976,47 @@ export function blockedReason(state, action) {
            + "segment's last frame.");
   }
   return null;
+}
+
+/**
+ * Why the seam in front of a clip cannot be made live, or null.
+ *
+ * A different question from `blockedReason`, and asked of a different card: a
+ * clip is not conditioned on anything, so what this seam does is pin the *end*
+ * of the shot behind it. That makes it a keyframe generation — which a shot
+ * already carrying references or its own end frame cannot be.
+ */
+export function clipSeamBlocked(timeline, index, action) {
+  const clip = timeline.segments[index];
+  const before = index > 0 ? timeline.segments[index - 1] : null;
+  const n = index;   // the card behind it, 1-based, which is this card's index
+
+  if (!before || isClip(before)) {
+    return t("Two clips play one after the other, with nothing generated between them to run in.");
+  }
+  if (action === "continue_audio") {
+    if (clip.has_audio === false) return t("This clip has no soundtrack to carry back across the cut.");
+    if (!clipSound(clip)) {
+      return t("This clip is playing silent. Turn its sound on to carry it back across the cut.");
+    }
+    return null;
+  }
+  if (frameAsset(before, "last_frame")) {
+    return t("Segment {n} has its own end frame. Remove it to end on this clip instead.", { n });
+  }
+  if (hasReferences(before)) {
+    return t("Segment {n} carries references, and ending on this clip pins its last frame — "
+           + "those are different checkpoints (Ref2VA vs FL2VA). Remove the references, "
+           + "or keep this a hard cut.", { n });
+  }
+  return null;
+}
+
+/** The widest blend the segment behind a clip can afford. The overlap is
+ *  re-generated at that segment's tail and trimmed off it, so it comes out of
+ *  that card's length and not the clip's. */
+export function maxClipFeather(timeline, index) {
+  const before = index > 0 ? timeline.segments[index - 1] : null;
+  if (!before || isClip(before)) return 1;
+  return maxFeather(before);
 }

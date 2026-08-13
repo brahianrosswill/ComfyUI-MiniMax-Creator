@@ -560,7 +560,8 @@ def describe_slots(slots):
     return lines
 
 
-def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None):
+def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None,
+                 footage=()):
     """What to rewrite, and what is attached to rewrite it against.
 
     `shots` is one entry per body wanted back, in play order:
@@ -585,6 +586,14 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
     Each shot's own attachments are listed under it rather than in one glossary
     at the top, because handles are allocated per segment: two cards both have an
     `@img-1` and it is a different file in each.
+
+    `footage` is where the piece cuts to video the user already has — a list of
+    `{"before": n, "seconds": s}`, `n` being the shot it plays in front of and
+    `len(shots)` meaning it closes the piece. Nothing is written for it and
+    nothing comes back for it: it is played as it is. It is named anyway,
+    because the shots on either side were written against it, and a rewrite
+    that thought shot 3 cut straight to shot 4 would carry a continuity across
+    a cut that is going to hold somebody else's footage.
     """
     many = len(shots) > 1
     lines = []
@@ -605,6 +614,19 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
             f"together: what an early shot establishes — the look, the people, the "
             f"place, the light — every later shot keeps. Return exactly "
             f"{len(shots)} entries in `shots`, in this order."
+        )
+    if footage:
+        where = ", ".join(
+            (f"{float(cut['seconds']):.1f} s after the last shot"
+             if int(cut["before"]) >= len(shots)
+             else f"{float(cut['seconds']):.1f} s before shot {int(cut['before']) + 1}")
+            for cut in footage)
+        lines.append(
+            f"The piece also cuts to footage that already exists and is played as "
+            f"it is, not generated: {where}. Do not write it and do not return an "
+            f"entry for it. Write the shots around it knowing the cut is there — "
+            f"what it shows is not yours to describe, and a shot on either side of "
+            f"it should not claim continuity through it."
         )
 
     if piece and (piece.get("rewrite") or str(piece.get("text") or "").strip()):

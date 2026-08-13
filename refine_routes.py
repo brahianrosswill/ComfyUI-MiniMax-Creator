@@ -218,7 +218,7 @@ def _shot(compiled, text, seconds, continues, show_labels):
 
 
 def _plan(body):
-    """The request -> (mode, shots, images, piece, single), whichever shape it is.
+    """The request -> (mode, shots, images, piece, single, pool, footage).
 
     One shot for the Creator node and for a single timeline card; every card at
     once for a whole-timeline refine, which is the only way shot 4 can be written
@@ -240,7 +240,7 @@ def _plan(body):
         compiled = compiler.compile_request(data, media.image_size)
         shot, images = _shot(compiled, str(data.get("prompt") or ""),
                              compiled.seconds, False, True)
-        return compiled.mode, [shot], images, None, False, None
+        return compiled.mode, [shot], images, None, False, None, []
 
     segments = compiler.timeline_segments(data)
     payloads = compiler.timeline_payloads(data, media.image_size)
@@ -271,12 +271,27 @@ def _plan(body):
         pool = {"slots": slots, "images": pictures,
                 "handles": {a.handle for a in pool_assets}}
 
-    wanted = list(range(len(segments)))
+    # Supplied footage has no prose to write: it is played as it is, and there
+    # is no prompt on the card to rewrite. It is not skipped silently, though —
+    # `_shot` puts a line in the message saying a clip runs here and how long
+    # for, because the shots either side of it were written against it and a
+    # rewrite that did not know the piece cuts to real footage there would
+    # describe a continuity that is not going to happen.
+    wanted = [index for index in range(len(segments))
+              if not compiler.is_clip(segments[index])]
     if kind == "segment":
         index = int(body.get("index", 0))
         if not 0 <= index < len(segments):
             raise compiler.CompileError(f"there is no segment {index + 1}")
+        if compiler.is_clip(segments[index]):
+            raise compiler.CompileError(
+                f"segment {index + 1} is a supplied clip — it is played as it is, "
+                f"so there is nothing to rewrite"
+            )
         wanted = [index]
+    if not wanted:
+        raise compiler.CompileError(
+            "every card in this timeline is supplied footage — there is nothing to rewrite")
 
     shots, images = [], []
     lone = len(wanted) == 1
@@ -319,8 +334,23 @@ def _plan(body):
         shots.append(shot)
         images.extend(pictures)
 
+    # Where the piece cuts to footage, counted in shots rather than in cards:
+    # the model is shown the shots and knows nothing about card numbers, so a
+    # clip is placed by how many written shots come before it. Only on a
+    # whole-timeline refine — a single card is shown the others as context and
+    # is not being asked to write around anything.
+    footage = []
+    if kind == "timeline":
+        written = 0
+        for index, segment in enumerate(segments):
+            if compiler.is_clip(segment):
+                footage.append({"before": written,
+                                "seconds": compiler.clip_spec(segment, index)["duration"]})
+            else:
+                written += 1
+
     piece = str(data.get("prompt") or "")
-    return _representative(shots), shots, images, piece, single, pool
+    return _representative(shots), shots, images, piece, single, pool, footage
 
 
 def _representative(shots):
@@ -494,7 +524,7 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
 def _run(body):
     """The blocking half: compile, look, ask, parse. Runs on a thread."""
     kind = body.get("kind")
-    derived, shots, pictures, piece_text, single, pool = _plan(body)
+    derived, shots, pictures, piece_text, single, pool, footage = _plan(body)
 
     seconds = sum(float(s.get("seconds") or 0) for s in shots)
 
@@ -570,6 +600,7 @@ def _run(body):
         mode=mode,
         piece=piece,
         pool=pool["slots"] if pool else None,
+        footage=footage,
     )
     content = refine_local.chat(
         body.get("model") or "",

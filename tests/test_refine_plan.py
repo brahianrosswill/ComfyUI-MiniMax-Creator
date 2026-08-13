@@ -93,7 +93,7 @@ def plan(flags, kind="timeline", index=None, render="chained"):
     body = {"kind": kind, "data": strip(flags, render=render)}
     if index is not None:
         body["index"] = index
-    mode, shots, images, piece, single, pool = routes._plan(body)
+    mode, shots, images, piece, single, pool, footage = routes._plan(body)
     return {"mode": mode, "shots": shots, "piece": piece, "single": single}
 
 
@@ -142,7 +142,7 @@ check("lone card is the sampled length", 5.0 < lone[0]["seconds"] < 5.5, True)
 
 seamed = strip([False, True, False])
 seamed["segments"][2]["continue"] = True
-_, shots, _, _, _, _ = routes._plan({"kind": "timeline", "data": seamed})
+_, shots, _, _, _, _, _ = routes._plan({"kind": "timeline", "data": seamed})
 check("seam on the pass head", [s["continues"] for s in shots], [False, False, True])
 
 # The flag on a merged card describes a seam that no longer exists: it was
@@ -150,7 +150,7 @@ check("seam on the pass head", [s["continues"] for s in shots], [False, False, T
 # a frame the sampler will never hand it.
 inner = strip([False, True, True])
 inner["segments"][1]["continue"] = True
-_, shots, _, _, _, _ = routes._plan({"kind": "timeline", "data": inner})
+_, shots, _, _, _, _, _ = routes._plan({"kind": "timeline", "data": inner})
 check("no seam inside a pass", [s["continues"] for s in shots], [False, False, False])
 
 # ---- one card at a time, at any index --------------------------------------

@@ -238,7 +238,7 @@ export function loraShowcaseUrl(name, item, { thumb = false } = {}) {
   return api.apiURL(`/minimax_creator/lora_showcase?${params}`);
 }
 
-const PROBES = new Map();   // path -> Promise<{hasAudio, duration}>
+const PROBES = new Map();   // path -> Promise<{hasAudio, duration, width, height}>
 
 /**
  * What the container header says: `{hasAudio: true|false|null, duration}`, both
@@ -248,7 +248,9 @@ const PROBES = new Map();   // path -> Promise<{hasAudio, duration}>
  * and it has to be a server question: `mozHasAudio` is Firefox-only and
  * `audioTracks` is not in Chrome, so there is no portable way to ask the media
  * element. `duration` is the segment editor's fallback for when the browser
- * cannot decode the clip itself.
+ * cannot decode the clip itself. `width`/`height` are the picture's own size,
+ * which a clip card stores so the timeline's aspect can come off the footage
+ * without the backend opening the file.
  */
 export function probe(path) {
   if (!PROBES.has(path)) PROBES.set(path, ask(path));
@@ -267,9 +269,11 @@ async function ask(path) {
     return {
       hasAudio: typeof body.has_audio === "boolean" ? body.has_audio : null,
       duration: Number.isFinite(body.duration) ? body.duration : null,
+      width: Number.isFinite(body.width) ? body.width : null,
+      height: Number.isFinite(body.height) ? body.height : null,
     };
   } catch {
-    return { hasAudio: null, duration: null };
+    return { hasAudio: null, duration: null, width: null, height: null };
   }
 }
 

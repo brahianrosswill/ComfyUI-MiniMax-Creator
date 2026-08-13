@@ -312,6 +312,26 @@ export const css = `
 .mmc-tl-add:hover:not(:disabled) { color: var(--mmc-text); border-color: rgba(255,255,255,.2); }
 .mmc-tl-add:disabled { cursor: not-allowed; opacity: .4; }
 
+/* Two ways to fill the next stretch of the piece: write one, or bring one.
+   Stacked in a single tile so they read as one choice at one place on the
+   strip rather than as two unrelated buttons. */
+.mmc-tl-add-pair { grid-row: 2; display: flex; flex-direction: column; gap: 6px; }
+.mmc-tl-add-pair .mmc-tl-add { margin: 0 0 0 12px; flex: 1; min-height: 0; }
+.mmc-tl-add-pair .mmc-tl-add:first-child { margin-top: 6px; }
+.mmc-tl-add-pair .mmc-tl-add:last-child { margin-bottom: 6px; }
+.mmc-tl-add-pair .mmc-tl-add span:first-child { font-size: 15px; }
+.mmc-tl-add-clip { border-style: solid; }
+
+/* A clip card. Solid where a shot's card is not, because the difference worth
+   seeing at a glance is that this stretch of the piece already exists. */
+.mmc-tl-clip { background: var(--mmc-surface-3); }
+.mmc-tl-clip-tag { color: var(--mmc-dim); }
+.mmc-tl-clip-name {
+  font-style: normal; color: var(--mmc-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mmc-tl-seam-clip .mmc-tl-join.on { border-style: dashed; }
+
 /* The segment editor, over the strip. Its body is the Creator node's, unchanged. */
 .mmc-tl-editor { width: min(880px, 100%); height: min(720px, 100%); }
 .mmc-tl-editor-sub { color: var(--mmc-dim); font-size: 13px; }
