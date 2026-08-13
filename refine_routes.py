@@ -242,9 +242,23 @@ def _plan(body):
                              compiled.seconds, False, True)
         return compiled.mode, [shot], images, None, False, None
 
-    single = compiler.render_mode(data) == "single"
     segments = compiler.timeline_segments(data)
     payloads = compiler.timeline_payloads(data, media.image_size)
+
+    # A payload is a pass, not a card: a run of merged segments compiles to one
+    # generation, so the two lists are different lengths the moment anything is
+    # merged, and a card's request is its *pass*'s payload. Refining is still
+    # per card either way — the rewrite is stored on the card, and a pass is
+    # where its text will be read from, not a thing with prose of its own.
+    runs = compiler.timeline_runs(data, segments)
+    pass_of = {index: position
+               for position, (start, end) in enumerate(runs)
+               for index in range(start, end)}
+    # Whether the whole piece is one pass — one generation whose shots share one
+    # reference pool, one keyframe pair and one mode. That is what `render:
+    # "single"` used to mean, said now against the run map, which is the only
+    # place it is still true.
+    single = len(runs) == 1 and runs[0][1] - runs[0][0] == len(segments)
 
     # The piece's own reference pool, shown once whatever is asked about: the
     # model may write a pool handle into any shot — citing it is what attaches
@@ -266,17 +280,34 @@ def _plan(body):
 
     shots, images = [], []
     lone = len(wanted) == 1
+    # One compile per pass, not per card: the members of a merged run all read
+    # the same payload, and compiling a group means merging its whole reference
+    # pool — work worth doing once for a strip the user is waiting on.
+    compiled_of = {}
     for index in wanted:
-        payload = payloads[index]
-        compiled = compiler.compile_segment(payload, media.image_size)
+        position = pass_of[index]
+        start, end = runs[position]
+        payload = payloads[position]
+        if position not in compiled_of:
+            compiled_of[position] = compiler.compile_segment(payload, media.image_size)
+        compiled = compiled_of[position]
+        merged = end - start > 1
         shot, pictures = _shot(
             compiled,
             # The segment's own text, not the payload's join: the global prompt
             # rides beside the shots as THE PIECE, said once, and stays a
             # compile-time join in front of the shot-scoped rewrite.
             str(segments[index].get("prompt") or ""),
-            float(segments[index].get("duration_s") or 0) if single else compiled.seconds,
-            bool(payload.get("continue")),
+            # Inside a pass the compile's length is the whole pass's, so a card
+            # there is worth only the length it was given; a card that is its
+            # own pass takes the compiled length, which is the one that will be
+            # sampled.
+            float(segments[index].get("duration_s") or 0) if merged else compiled.seconds,
+            # The seam belongs to the card that opens the pass. A merged card
+            # has no seam of its own — the run it joined is continuous — so the
+            # flag is read off the payload only for the head, exactly as
+            # `timeline_payloads` writes it.
+            index == start and bool(payload.get("continue")),
             lone,
         )
         shot["index"] = index
@@ -289,10 +320,10 @@ def _plan(body):
         images.extend(pictures)
 
     piece = str(data.get("prompt") or "")
-    return _representative(data, shots, single), shots, images, piece, single, pool
+    return _representative(shots), shots, images, piece, single, pool
 
 
-def _representative(data, shots, single):
+def _representative(shots):
     """The mode the system prompt is written for.
 
     The four keyframe modes share one guide and one reply shape, so a strip that
@@ -304,12 +335,11 @@ def _representative(data, shots, single):
     (`reply_shape`'s `ref_shots`) and each plain card keeping its own mode note
     beside its text. So neither a mixed strip nor a chained strip of reference
     segments needs refusing any more.
-    """
-    if single:
-        # One pass is one generation, so the merged request has the only mode
-        # there is — the cards' individual modes are not what will be encoded.
-        return compiler.compile_single(data, media.image_size).mode
 
+    A card's mode is its pass's — every member of a merged run is compiled from
+    the one payload that will be encoded — so a one-pass strip needs no separate
+    branch here: its cards already all report the merged request's mode.
+    """
     modes = [shot["mode"] for shot in shots]
     if "REF2VA" in modes:
         return "REF2VA"
