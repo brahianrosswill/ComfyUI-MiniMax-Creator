@@ -1407,14 +1407,19 @@ export function activeLoras(state) {
 /** `strength` is the weight a sidecar recorded — A1111's "preferred weight",
  *  Lora Manager's usage tip — which is the number whoever wrote it settled on
  *  after using the file. Absent, out of range or not a number all mean nobody
- *  recorded one, and the slider starts where it always did. */
+ *  recorded one, and the slider starts at `turboStrength` — 1.00 for anything
+ *  that is not a distill, and the number that distill's author published for the
+ *  ones that are, so engaging one from the manager lands where the switch would
+ *  have put it. */
 export function addLora(state, name, triggers = [], strength = null) {
   if (findLora(state, name)) return null;
-  const preferred = Number(strength);
+  // A file with no sidecar arrives as `strength: null`, and `Number(null)` is 0
+  // — a weight, and a legal one, so it has to be ruled out before the cast.
+  const preferred = typeof strength === "number" ? strength : NaN;
   const entry = {
     name,
     strength: Number.isFinite(preferred) && preferred >= -1 && preferred <= 2
-      ? preferred : DEFAULT_STRENGTH,
+      ? preferred : turboStrength(name),
     enabled: true,
     modes: [...CHECKPOINTS], triggers: [...triggers],
   };
