@@ -26,10 +26,28 @@ MAX_REF_VIDEOS = 3
 MAX_REF_AUDIOS = 3
 MAX_REF_FILES = 12
 
-# A timeline segment is a whole generation, so this is a cap on how many sampler
-# passes one queue can expand into. High enough to never be the reason a real
-# timeline is refused, low enough that a malformed blob does not run for a day.
-MAX_SEGMENTS = 24
+# Two bounds, on two different quantities, and only the second one is about work.
+#
+# Cards are bounded so that a corrupt or generated blob is not walked at all —
+# nothing structural, and deliberately far above any real piece. It used to be 24
+# and it used to claim to be the work bound ("low enough that a malformed blob
+# does not run for a day"), which it never was in either direction: a segment
+# stopped being a generation when merging arrived, so 24 cards merged end to end
+# is *one* pass, while 24 unmerged cards of a minute each is 24 generations of
+# 1445 frames — exactly the runaway it was meant to prevent. Cards do not measure
+# work, and a real ten-minute piece was being refused by a number that was not
+# measuring anything.
+MAX_SEGMENTS = 240
+
+# What does measure work: the frames the queue will actually deliver, summed over
+# the passes and less what each seam re-generates. Frames are the only quantity
+# here that maps to time — passes do not, because a pass is anything from 5 to
+# 1445 frames, and cards do not, because a run of them is one generation.
+#
+# Half an hour of finished video. Not a statement about the weights: no
+# deliberate piece in one node reaches it, and a blob that asks for more asked by
+# accident. `timeline_frames` is what it is checked against.
+MAX_TIMELINE_FRAMES = 30 * 60 * canvas.FPS
 
 # How much of the previous segment's sound is handed to the next one.
 #
@@ -925,6 +943,49 @@ def timeline_runs(data, segments=None):
     return [(start, end) for start, end in runs]
 
 
+def timeline_frames(data, segments=None, runs=None):
+    """The frames the finished clip holds: every pass's own, less what each seam
+    re-generates and `MiniMaxH3SeamTrim` then drops.
+
+    Counted per pass rather than per card because a pass is what gets snapped to
+    the 17n+5 grid — a run of three five-second cards is one 362-frame generation,
+    not three 120-frame ones, and summing the cards would be wrong by the
+    rounding on each. This is the quantity `MAX_TIMELINE_FRAMES` bounds, and the
+    one the cost line shows; mirrors `state.timelineFrames`.
+    """
+    if segments is None:
+        segments = timeline_segments(data)
+    if runs is None:
+        runs = timeline_runs(data, segments)
+
+    total = 0
+    for position, (start, end) in enumerate(runs):
+        seconds = sum(_duration_seconds(segment) for segment in segments[start:end])
+        total += canvas.frames_for_seconds(seconds)
+        # A feathered seam re-generates its inherited run at the head of the pass
+        # and trims it off after decode, so those frames are sampled but never
+        # delivered. Only between passes: a seam inside one does not exist. Read
+        # leniently — a bad feather is `compile_request`'s to refuse, with the
+        # frame count in hand to say why.
+        head = segments[start]
+        if position and head.get("continue"):
+            try:
+                feather = int(head.get("feather") or 1)
+            except (TypeError, ValueError):
+                feather = 1
+            if feather > 1:
+                total -= feather
+    return total
+
+
+def _duration_seconds(segment):
+    """A card's length, defaulting the way `compile_request` defaults it."""
+    try:
+        return float(segment.get("duration_s", 6) or 0)
+    except (TypeError, ValueError) as exc:
+        raise CompileError("duration_s must be a number of seconds") from exc
+
+
 def _join_prompt(global_prompt, segment_prompt):
     """The global prompt in front of the segment's own.
 
@@ -1043,9 +1104,10 @@ def _inject_pool(pool, request, extra_texts=()):
 def timeline_segments(data):
     """The segment list off a timeline blob, validated. Shared by both render modes.
 
-    `MAX_SEGMENTS` means two different things depending on the mode — sampler
-    passes per queue when chained, shots in one description when single — but the
-    number is a sanity bound on a hand-edited blob either way, so it is one cap.
+    `MAX_SEGMENTS` is only the corrupt-blob bound — a card is not a unit of work,
+    so how long the queue runs is `MAX_TIMELINE_FRAMES`' question and is asked in
+    `timeline_payloads`. This one exists so that a garbage list is refused before
+    anything walks it.
     """
     if not isinstance(data, dict):
         raise CompileError("timeline_data must be a JSON object")
@@ -1100,6 +1162,20 @@ def timeline_payloads(data, image_size_lookup=None):
     # a checkpoint error on a segment nobody edited.
     global_cited = {asset.handle for asset in pool} & set(HANDLE_RE.findall(global_prompt))
     runs = timeline_runs(data, segments)
+
+    # The work bound, asked here because this is the one function both node paths
+    # go through and because it is answerable off the blob alone — before a
+    # loader is built, let alone a sampler run. Frames rather than cards or
+    # passes: see `MAX_TIMELINE_FRAMES`.
+    frames = timeline_frames(data, segments, runs)
+    if frames > MAX_TIMELINE_FRAMES:
+        raise CompileError(
+            f"this timeline runs to {canvas.seconds_for_frames(frames) / 60:.1f} minutes "
+            f"({frames} frames) and one node will not queue more than "
+            f"{MAX_TIMELINE_FRAMES // (60 * canvas.FPS)} — shorten it, or split the piece "
+            f"across two Timeline nodes"
+        )
+
     payloads = []
     # Which payload each segment ends up in, so a seam naming an earlier segment
     # can be pointed at the generation that actually produces its frames. A

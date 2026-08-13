@@ -676,6 +676,45 @@ expect_error("too many segments",
              lambda: timeline([segment()] * (compiler.MAX_SEGMENTS + 1)),
              "at most")
 
+# --- what bounds a timeline --------------------------------------------------
+#
+# Cards do not measure work and neither do passes; frames do. These are the
+# assertions that keep `MAX_SEGMENTS` from drifting back into being read as a
+# work bound — mutate `timeline_frames` to sum cards instead of passes and the
+# first one fails, which is the whole point of it.
+
+# Three five-second cards merged into one pass are one 362-frame generation, not
+# three 124-frame ones. Summing the cards would be wrong by the rounding on each.
+merged_run = {"segments": [segment(**{"duration_s": 5}),
+                           segment(**{"duration_s": 5, "merge": True}),
+                           segment(**{"duration_s": 5, "merge": True})]}
+check("a merged pass is snapped once, not per card",
+      compiler.timeline_frames(merged_run), canvas.frames_for_seconds(15))
+check("...which is not what the cards sum to",
+      compiler.timeline_frames(merged_run) == 3 * canvas.frames_for_seconds(5), False)
+
+check("an unmerged strip snaps every card",
+      compiler.timeline_frames({"segments": [segment(**{"duration_s": 5})] * 3}),
+      3 * canvas.frames_for_seconds(5))
+
+# A feathered seam re-generates its inherited run and SeamTrim drops it, so those
+# frames are sampled but never delivered — and the finished length has to say so.
+feathered = {"segments": [segment(),
+                          segment(**{"continue": True, "feather": 22})]}
+check("a feathered seam costs the finished clip its overlap",
+      compiler.timeline_frames(feathered), 2 * canvas.frames_for_seconds(6) - 22)
+check("...and an unfeathered one costs nothing",
+      compiler.timeline_frames({"segments": [segment(), segment(**{"continue": True})]}),
+      2 * canvas.frames_for_seconds(6))
+
+# The work bound itself. Long cards rather than many, precisely because the old
+# cap could not see this case: well inside MAX_SEGMENTS, hours of video.
+expect_error("a timeline past the frame budget",
+             lambda: timeline([segment(**{"duration_s": 60})] * 40),
+             "will not queue more than")
+check("...and one inside it compiles",
+      len(timeline([segment(**{"duration_s": 60})] * 25)), 25)
+
 # --- timeline globals --------------------------------------------------------
 #
 # Three things the timeline owns on top of the prompt and the canvas: the LoRAs

@@ -504,12 +504,13 @@ class Timeline {
       parts.push(this.renderPass(pass));
     });
     const what = S.isSingle(this.timeline) ? "Shot" : "Segment";
+    // The refusal is the tooltip when there is one: the button says why it is
+    // dead rather than leaving the user to find out at queue time.
+    const refusal = S.addSegmentRefusal(this.timeline);
     parts.push(el("button", {
       class: "mmc-tl-add",
-      title: this.timeline.segments.length >= S.MAX_SEGMENTS
-        ? t("A timeline holds at most {max}.", { max: S.MAX_SEGMENTS })
-        : t("Add a {what} to the end", { what: t(what.toLowerCase()) }),
-      disabled: this.timeline.segments.length >= S.MAX_SEGMENTS || undefined,
+      title: refusal ?? t("Add a {what} to the end", { what: t(what.toLowerCase()) }),
+      disabled: refusal ? true : undefined,
       onclick: () => this.add(),
     }, [el("span", { text: "+" }), el("span", { text: t(what) })]));
     this.stripHost.classList.toggle(
@@ -888,9 +889,12 @@ class Timeline {
           disabled: index === this.timeline.segments.length - 1 || undefined,
           onclick: () => this.move(index, 1),
         }),
+        // Weighed against this card's own length, not a fresh card's: a copy of
+        // a twenty-second shot costs twenty seconds of the budget.
         el("button", {
-          class: "mmc-ghost", text: "⧉", title: t("Duplicate"),
-          disabled: this.timeline.segments.length >= S.MAX_SEGMENTS || undefined,
+          class: "mmc-ghost", text: "⧉",
+          title: S.addSegmentRefusal(this.timeline, segment.duration_s) ?? t("Duplicate"),
+          disabled: S.addSegmentRefusal(this.timeline, segment.duration_s) ? true : undefined,
           onclick: () => this.duplicate(index),
         }),
         el("button", {
@@ -905,13 +909,13 @@ class Timeline {
   // ---- actions ---------------------------------------------------------------
 
   add() {
-    if (this.timeline.segments.length >= S.MAX_SEGMENTS) return;
+    if (S.addSegmentRefusal(this.timeline)) return;
     this.timeline.segments.push(S.continuingSegment());
     this.commit();
   }
 
   duplicate(index) {
-    if (this.timeline.segments.length >= S.MAX_SEGMENTS) return;
+    if (S.addSegmentRefusal(this.timeline, this.timeline.segments[index].duration_s)) return;
     this.timeline.segments.splice(index + 1, 0, S.cloneSegment(this.timeline.segments[index]));
     // Every segment after the insertion moved down one card; a seam naming one
     // of them follows it. Nothing pointed at the clone a moment ago, and a seam

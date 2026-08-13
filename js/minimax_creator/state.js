@@ -9,6 +9,10 @@ import { t } from "./i18n.js";
 // machine, in `settings.js`, so a shared workflow does not carry one person's
 // folder names onto another person's disk.
 
+// What a fresh card is worth. Mirrors `compile._duration_seconds`' default, and
+// is what `addSegmentRefusal` weighs against the frame budget.
+export const DEFAULT_DURATION_S = 6;
+
 export const MAX_REF_IMAGES = 9;
 export const MAX_REF_VIDEOS = 3;
 export const MAX_REF_AUDIOS = 3;
@@ -390,7 +394,7 @@ export function emptyState() {
     music: "",
     assets: [],
     loras: [],
-    duration_s: 6,
+    duration_s: DEFAULT_DURATION_S,
     aspect: "16:9",
     short_edge: NATIVE_SHORT_EDGE,
     // The two-pass choice and its two knobs. Owned wherever the canvas is
@@ -574,7 +578,13 @@ export function serializeState(state) {
 // because the segments are concatenated at the end and have to match, plus one
 // flag saying whether it starts from the previous segment's last frame.
 
-export const MAX_SEGMENTS = 24;
+// Mirrors compile.MAX_SEGMENTS / compile.MAX_TIMELINE_FRAMES — two bounds on two
+// quantities, and only the second is about work. Cards are bounded so a corrupt
+// blob is refused before it is walked; how long the queue runs is a question
+// about frames, because a pass is anything from 5 to 1445 of them and a run of
+// cards is one generation. `canAddSegment` is what the strip actually asks.
+export const MAX_SEGMENTS = 240;
+export const MAX_TIMELINE_FRAMES = 30 * 60 * FPS;
 
 /** Mirrors compile.RENDER_MODES. "chained" is a generation per segment,
  *  concatenated; "single" is one generation whose description holds every
@@ -937,6 +947,29 @@ export function timelineFrames(timeline) {
 /** What the finished clip will run to. */
 export function timelineSeconds(timeline) {
   return secondsForFrames(timelineFrames(timeline));
+}
+
+/**
+ * Why another card cannot be added, or null when it can — the string goes
+ * straight into the button's tooltip.
+ *
+ * Asked with the card that *would* be added rather than after the fact, so a
+ * control goes dead on the click that queueing would have refused instead of
+ * letting the strip reach a state `timeline_payloads` throws on. The frame bound
+ * is the one that will actually be met: at six seconds a card, half an hour is
+ * three hundred cards against a card cap of 240, so `MAX_SEGMENTS` only ever
+ * catches a blob nobody built by clicking.
+ */
+export function addSegmentRefusal(timeline, seconds = DEFAULT_DURATION_S) {
+  if (timeline.segments.length >= MAX_SEGMENTS) {
+    return t("A timeline holds at most {max} segments.", { max: MAX_SEGMENTS });
+  }
+  if (timelineFrames(timeline) + framesForSeconds(seconds) > MAX_TIMELINE_FRAMES) {
+    return t("A timeline holds at most {minutes} minutes of finished video. "
+           + "Shorten it, or split the piece across two Timeline nodes.",
+             { minutes: Math.round(MAX_TIMELINE_FRAMES / (60 * FPS)) });
+  }
+  return null;
 }
 
 // ---- pre-stage --------------------------------------------------------------
