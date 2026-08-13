@@ -15,6 +15,7 @@ Skips itself with a message if they are not importable.
 
 import importlib.util
 import os
+from fractions import Fraction
 import sys
 import tempfile
 
@@ -154,6 +155,99 @@ _, _, samples, silent_path = written([part(8, seconds=None), part(8, seconds=Non
 check("a reel with no sound has no audio stream", samples, 0)
 with av.open(silent_path) as container:
     check("...and none in the container either", len(container.streams.audio), 0)
+
+# ---- a supplied clip, spliced rather than decoded ---------------------------
+#
+# The point of the file part is that the footage never becomes a tensor, so
+# what has to be checked is the conforming: a source at another frame rate,
+# another size and another sample rate has to come out on the reel's grid, in
+# the right place, and the right length. The source below is deliberately wrong
+# on all four axes.
+
+SRC_FPS = 30
+SRC_W, SRC_H = 96, 96          # square, against a 64x48 reel: cover-cropped
+SRC_RATE = 44100
+
+
+def source_clip(seconds=2.0, sound=True, fps=SRC_FPS, size=(SRC_W, SRC_H)):
+    """A real file on disk to splice — flat white, so it is told from the parts."""
+    width, height = size
+    path = os.path.join(tempfile.mkdtemp(), "source.mp4")
+    with av.open(path, mode="w") as out:
+        video = out.add_stream("h264", rate=fps)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        sound_stream = None
+        if sound:
+            sound_stream = out.add_stream("aac", rate=SRC_RATE, layout="stereo")
+        total = int(seconds * fps)
+        for index in range(total):
+            array = torch.full((height, width, 3), 1.0)
+            array = (array * 255).byte().numpy()
+            frame = av.VideoFrame.from_ndarray(array, format="rgb24")
+            frame.pts = index
+            frame.time_base = Fraction(1, fps)
+            out.mux(video.encode(frame.reformat(format="yuv420p")))
+        out.mux(video.encode(None))
+        if sound_stream is not None:
+            block = torch.zeros(2, int(seconds * SRC_RATE)).numpy()
+            frame = av.AudioFrame.from_ndarray(block, format="fltp", layout="stereo")
+            frame.sample_rate = SRC_RATE
+            frame.pts = 0
+            out.mux(sound_stream.encode(frame))
+            out.mux(sound_stream.encode(None))
+    return path
+
+
+def clip_part(path, start=0.0, duration=0.0, sound=True, size=(WIDTH, HEIGHT)):
+    return {"clip": {"path": path, "start": start, "duration": duration,
+                     "width": size[0], "height": size[1],
+                     "sound": sound, "rate": RATE, "channels": 2}}
+
+
+src = source_clip(seconds=2.0)
+frames, levels, samples, _ = written([clip_part(src)])
+# 2 s of 30 fps source on a 24 fps reel is 48 frames, not 60: the reel is one
+# constant-rate stream and a source handed over at its own rate would play slow.
+check("a spliced clip lands on the reel's frame rate", frames, 48)
+check("...and is all there at one brightness", set(levels), {1.0})
+close("...with its sound resampled to the reel's rate", samples, int(2.0 * RATE), 2048)
+
+# The window. A clip is cut at the source's own timeline and only that stretch
+# is demuxed — the rest is never decoded, which is the whole point.
+frames, _, samples, _ = written([clip_part(src, start=0.5, duration=1.0)])
+close("a trimmed clip contributes only its window", frames, 24, 1)
+close("...and its sound is cut to match", samples, int(1.0 * RATE), 2400)
+
+# Spliced between two generated passes: the frames land in play order and
+# nothing after the clip slides, which is the property the whole reel rests on.
+frames, levels, samples, _ = written(
+    [part(12, seconds=0.5, level=0.2), clip_part(src, duration=1.0),
+     part(12, seconds=0.5, level=0.4)])
+check("a clip between two passes keeps play order",
+      (levels[:12], set(levels[12:-12]), levels[-12:]),
+      ([0.2] * 12, {1.0}, [0.4] * 12))
+close("...and the reel is as long as its parts", frames, 12 + 24 + 12, 1)
+close("...with the sound running the whole of it",
+      samples, int((12 + 24 + 12) / FPS * RATE), 2400)
+
+# A clip whose sound is switched off, and a clip whose container has none at
+# all: both hold their own time open with silence rather than pulling the parts
+# after them forward.
+silent_src = source_clip(seconds=1.0, sound=False)
+frames, levels, _, _ = written(
+    [clip_part(src, duration=1.0, sound=False), part(12, seconds=0.5, level=0.4)])
+check("a muted clip still plays its picture", frames, 24 + 12)
+frames, _, samples, _ = written([clip_part(silent_src), part(12, seconds=0.5)])
+check("a clip with no soundtrack still plays", frames, 24 + 12)
+close("...and holds its own time open", samples, int(36 / FPS * RATE), 2400)
+
+# Cover, not letterbox. The source is square and the reel is 4:3, so a fitted
+# clip would have bars — flat black at the edges against a flat white source.
+_, _, _, covered = written([clip_part(src, duration=0.5)])
+with av.open(covered) as container:
+    edge = next(container.decode(video=0)).to_ndarray(format="rgb24")
+if int(edge[edge.shape[0] // 2, 0, 0]) < 128:
+    FAILURES.append("a spliced clip is letterboxed: the left edge came back black")
 
 # ---- what it refuses --------------------------------------------------------
 #

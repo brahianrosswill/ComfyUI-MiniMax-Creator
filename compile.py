@@ -209,6 +209,17 @@ class Compiled:
     # whose music keeps playing is an ordinary thing to want.
     continues_audio: bool = False
     audio_tail_s: float = 0.0
+    # The seam running the other way: the pass after this one is supplied
+    # footage, and this generation ends on the clip's opening frame rather than
+    # cutting to it. `ends_feather` is the same idea as `feather` at the other
+    # end — the clip's first frames pinned across this segment's last ones, so
+    # the motion runs into the cut instead of arriving at a still. Those frames
+    # are re-generated here and trimmed off the end after decode, exactly as a
+    # head feather's are trimmed off the front.
+    ends_on: bool = False
+    ends_feather: int = 1
+    ends_on_audio: bool = False
+    ends_tail_s: float = 0.0
     # The two-pass upscale, when the resolution slider is past the native edge
     # and the user has not chosen "direct". `width`/`height` above are then the
     # native-capped canvas the first pass samples at; this is where the second
@@ -225,8 +236,8 @@ class Compiled:
         this rather than wiring it in unconditionally: an unused VAE resident
         during sampling is VRAM the DiT could have had.
         """
-        return bool(self.continues or self.first_frame or self.last_frame
-                    or self.ref_images or self.ref_videos)
+        return bool(self.continues or self.ends_on or self.first_frame
+                    or self.last_frame or self.ref_images or self.ref_videos)
 
     def encodes_audio(self):
         """Whether building this segment's conditioning calls `audio_vae.encode`.
@@ -239,7 +250,7 @@ class Compiled:
         decode-time loader only — the counterpart to `encodes_video`, gated the
         same way for the same reason.
         """
-        return bool(self.continues_audio or self.ref_audios
+        return bool(self.continues_audio or self.ends_on_audio or self.ref_audios
                     or any(v.track == "picture+sound" for v in self.ref_videos))
 
 
@@ -388,9 +399,10 @@ def _parse_track(handle, kind, item):
     return track
 
 
-def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, continues=False):
+def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios,
+                 continues=False, ends_on=False):
     has_refs = bool(ref_images or ref_videos or ref_audios)
-    has_frames = first_frame is not None or last_frame is not None
+    has_frames = first_frame is not None or last_frame is not None or ends_on
 
     # Continuing *is* having a start frame — it is the source segment's last
     # one — so a segment cannot also name a file for the slot.
@@ -399,6 +411,15 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
             "this segment continues from an earlier one, so its start frame is "
             "already the source segment's last frame — remove the start frame "
             "or turn continuation off"
+        )
+
+    # ...and ending on the clip that follows is having an end frame, which is
+    # the clip's opening one. Same statement, the other way round.
+    if ends_on and last_frame is not None:
+        raise CompileError(
+            "this segment runs into the clip after it, so its end frame is "
+            "already that clip's first frame — remove the end frame, or make "
+            "the cut into the clip a hard one"
         )
 
     # FL2VA and Ref2VA are two different DiT checkpoints. The hosted API can mix
@@ -410,6 +431,11 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
     # its references — so a seam no longer forces a checkpoint choice.
     if has_refs and has_frames:
         raise CompileError(
+            "Ending on the clip after this segment pins its last frame, and a "
+            "pinned frame needs a different checkpoint from references "
+            "(FL2VA vs Ref2VA). Make the cut into the clip a hard one, or "
+            "remove the references."
+            if ends_on and last_frame is None and first_frame is None else
             "Start/end frames and references need different checkpoints "
             "(FL2VA vs Ref2VA) and cannot be combined in one generation. "
             "Remove the frames or remove the references."
@@ -434,15 +460,16 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
             raise CompileError("reference audio needs at least one reference image or video alongside it")
         return "REF2VA"
 
-    if continues:
-        # The inherited frame fills the first slot, so this is I2VA on its own
-        # and FL2VA once the segment also names an end frame.
-        return "FL2VA" if last_frame is not None else "I2VA"
-    if first_frame is not None and last_frame is not None:
+    # The inherited frame fills the first slot and the clip after this one
+    # fills the last, so both roads land on the same four modes as a pair of
+    # attached stills would.
+    opens = continues or first_frame is not None
+    closes = ends_on or last_frame is not None
+    if opens and closes:
         return "FL2VA"
-    if first_frame is not None:
+    if opens:
         return "I2VA"
-    if last_frame is not None:
+    if closes:
         return "L2VA"
     return "T2VA"
 
@@ -656,8 +683,28 @@ def first_pass_edge(raw, short_edge):
     return max(canvas.MIN_SHORT_EDGE, min(ceiling, value))
 
 
+def _check_feather(width, live, what):
+    """A blend's width, validated against the seam it belongs to.
+
+    The same check at both ends of a segment: only the runs the video VAE can
+    encode standalone, and only where there is a live seam for them to cross.
+    """
+    width = int(width or 1)
+    if width not in FEATHER_GRID:
+        raise CompileError(
+            f"a seam can inherit {', '.join(map(str, FEATHER_GRID))} frames — "
+            f"the runs the video VAE's temporal grid can encode — not {width}"
+        )
+    if width > 1 and not live:
+        raise CompileError(
+            f"blending is a property of a live seam — this segment does not {what}"
+        )
+    return width
+
+
 def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=None,
-                    continues_audio=False, shots=1, feather=1):
+                    continues_audio=False, shots=1, feather=1,
+                    ends_on=False, ends_on_audio=False, ends_feather=1):
     """`creator_data` dict -> `Compiled`.
 
     `image_size_lookup(filename) -> (width, height)` supplies the keyframe
@@ -668,6 +715,12 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     off in the single-generation path: the first says the start frame arrives as
     a tensor from the previous segment, the second pins the geometry the first
     segment resolved onto every segment after it.
+
+    `ends_on` is the same statement about the *other* end — the pass after this
+    one is supplied footage and this generation runs into it, so its last frame
+    arrives as a tensor too. Only a timeline can say it, and only in front of a
+    clip: a generated pass after this one has nothing to hand backwards, since
+    it does not exist until this one has been sampled.
     """
     if not isinstance(data, dict):
         raise CompileError("creator_data must be a JSON object")
@@ -690,19 +743,11 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     ref_videos = [a for a in refs if a.kind == "video" and a.track != "sound"]
     ref_audios = [a for a in refs if a.kind == "audio" or (a.kind == "video" and a.track == "sound")]
 
-    mode = _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, continues)
+    mode = _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios,
+                        continues, ends_on)
 
-    feather = int(feather or 1)
-    if feather not in FEATHER_GRID:
-        raise CompileError(
-            f"a seam can inherit {', '.join(map(str, FEATHER_GRID))} frames — "
-            f"the runs the video VAE's temporal grid can encode — not {feather}"
-        )
-    if feather > 1 and not continues:
-        raise CompileError(
-            "feathering is a property of a continuing seam — this segment does "
-            "not continue from an earlier one"
-        )
+    feather = _check_feather(feather, continues, "continue from an earlier one")
+    ends_feather = _check_feather(ends_feather, ends_on, "run into a clip")
     audio_tail_s = audio_tail_seconds(data.get("audio_tail_s")) if continues_audio else 0.0
     # A feathered seam pins the tail end-aligned with the inherited frames on
     # this segment's own timeline, and the two are the tail of the same source:
@@ -716,6 +761,11 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     # `timeline.js`, which hides it once there are none left to govern.
     if feather > 1 and continues_audio:
         audio_tail_s = feather / canvas.FPS
+    # The same rule at the other end: what crosses into the clip is its own
+    # opening, and the sound has to cover the instants the pinned frames do.
+    ends_tail_s = audio_tail_seconds(data.get("audio_tail_s")) if ends_on_audio else 0.0
+    if ends_feather > 1 and ends_on_audio:
+        ends_tail_s = ends_feather / canvas.FPS
 
     checkpoint, pinned = _resolve_checkpoint(mode, data.get("checkpoint"))
     if mode == "REF2VA":
@@ -754,11 +804,15 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     # off after decode, so it spends this segment's frames without delivering
     # any. It must stay a small fraction of the clip: at half or more, what is
     # left after the trim is shorter than the overlap that produced it.
-    if frames < 2 * feather:
+    # Both blends spend frames the same way, so what has to fit is the two of
+    # them together: a segment blended at both ends re-generates a run at each,
+    # and both are trimmed off after decode.
+    overlap = (feather if feather > 1 else 0) + (ends_feather if ends_feather > 1 else 0)
+    if overlap and frames < 2 * overlap:
         raise CompileError(
-            f"a {feather}-frame feather needs a segment of at least "
-            f"{2 * feather} frames (~{2 * feather / canvas.FPS:.1f} s) — the "
-            f"inherited run is trimmed off after decode, and this segment has "
+            f"a {overlap}-frame blend needs a segment of at least "
+            f"{2 * overlap} frames (~{2 * overlap / canvas.FPS:.1f} s) — the "
+            f"blended run is trimmed off after decode, and this segment has "
             f"only {frames}"
         )
 
@@ -879,6 +933,10 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         continues_audio=continues_audio,
         audio_tail_s=audio_tail_s,
         feather=feather,
+        ends_on=ends_on,
+        ends_on_audio=ends_on_audio,
+        ends_feather=ends_feather,
+        ends_tail_s=ends_tail_s,
         refine=refine,
     )
 
@@ -901,6 +959,99 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
 RENDER_MODES = ("chained", "single")
 
 _HANDLE_PREFIX = {"image": "img", "video": "vid", "audio": "aud"}
+
+# What a card on the strip is. A shot is a generation — everything this module
+# was written for. A clip is footage the user already has, cut into the piece
+# and played as it is: no prompt, no references, no LoRAs, no sampler.
+#
+# It is a *card* rather than an asset because it occupies time on the strip. A
+# reference clip is something a generation looks at; this one is part of the
+# finished video, so it is the same kind of thing a shot is — it has a length,
+# a place in the order, and seams on both sides of it.
+SEGMENT_KINDS = ("shot", "clip")
+
+
+def segment_kind(segment):
+    """Which kind of card this is. Absent means a shot, which is every card
+    written before clips existed."""
+    kind = segment.get("kind") or "shot"
+    if kind not in SEGMENT_KINDS:
+        raise CompileError(f"unknown segment kind {kind!r}")
+    return kind
+
+
+def is_clip(segment):
+    return segment_kind(segment) == "clip"
+
+
+def clip_spec(segment, index):
+    """A clip card -> what the graph needs to splice it. Validated here.
+
+    `start`/`duration` are seconds on the source's own timeline, which is what
+    both the demuxer and `media.load_video` take. The length is the trim's when
+    there is one and the card's stored `duration_s` otherwise — written by the
+    UI off the probe route, because a clip's length is a fact about a file and
+    this module never touches disk.
+    """
+    filename = str(segment.get("filename") or "").strip()
+    if not filename:
+        raise CompileError(f"segment {index + 1}: a clip card names no file")
+
+    trim = _parse_trim(f"clip on segment {index + 1}", "video", segment.get("trim"))
+    if trim is not None:
+        start, duration = trim[0], trim[1] - trim[0]
+    else:
+        start, duration = 0.0, _stored_seconds(segment, index)
+
+    spec = {"filename": filename, "start": start, "duration": duration,
+            # A clip usually comes with its sound, and a clip chosen for a
+            # moment of action is usually wanted for the sound of it too. Off
+            # is a deliberate choice — scoring a shot from elsewhere — and is
+            # the only state written to the blob.
+            "sound": segment.get("sound") is not False}
+    # What the UI probed: the file's own pixel size, which is what lets the
+    # aspect come off the clip without this module opening it. Absent in a
+    # hand-written blob, where the ratio pill decides exactly as it always did.
+    # Distinct from `width`/`height`, which `timeline_payloads` stamps on
+    # afterwards and which are the size the clip is *conformed to*.
+    for key in ("width", "height"):
+        try:
+            value = int(segment[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if value > 0:
+            spec[f"source_{key}"] = value
+    return spec
+
+
+def _stored_seconds(segment, index):
+    try:
+        seconds = float(segment.get("duration_s") or 0)
+    except (TypeError, ValueError) as exc:
+        raise CompileError(
+            f"segment {index + 1}: a clip's length must be a number of seconds") from exc
+    if seconds <= 0:
+        raise CompileError(
+            f"segment {index + 1}: a clip card needs its length — trim it, or "
+            f"re-attach the file so its duration is read"
+        )
+    return seconds
+
+
+def clip_size(segments):
+    """(width, height) of the first supplied clip that knows its own, or None.
+
+    Which clip: the first on the strip. A piece holding footage at two aspects
+    can only be one of them, and the first is the one whose framing the rest is
+    cut against.
+    """
+    for segment in segments:
+        if not is_clip(segment):
+            continue
+        spec = clip_spec(segment, 0)
+        if "source_width" in spec and "source_height" in spec:
+            return spec["source_width"], spec["source_height"]
+    return None
 
 
 def render_mode(data):
@@ -932,7 +1083,30 @@ def timeline_runs(data, segments=None):
     """
     if segments is None:
         segments = timeline_segments(data)
+    # A clip is not generated, so it cannot share a generation. Checked before
+    # the runs are built rather than dropped quietly: merging is the statement
+    # that two cards are one sampler pass, and a strip that silently ignored it
+    # would price itself wrong on the bar and refuse at the graph instead.
+    for index, segment in enumerate(segments):
+        if not is_clip(segment):
+            continue
+        if index and segment.get("merge"):
+            raise CompileError(
+                f"segment {index + 1} is a supplied clip, so it is not generated "
+                f"and cannot share a generation with the segment before it"
+            )
+        if index + 1 < len(segments) and segments[index + 1].get("merge"):
+            raise CompileError(
+                f"segment {index + 2} is merged into segment {index + 1}, which is "
+                f"a supplied clip — there is no generation there to merge into"
+            )
     if render_mode(data) == "single":
+        if any(is_clip(segment) for segment in segments):
+            raise CompileError(
+                "this timeline holds supplied footage, which is played rather "
+                "than generated — so it cannot be rendered as one pass. Chain "
+                "it instead."
+            )
         return [(0, len(segments))]
     runs = []
     for index, segment in enumerate(segments):
@@ -961,6 +1135,12 @@ def timeline_frames(data, segments=None, runs=None):
     total = 0
     for position, (start, end) in enumerate(runs):
         seconds = sum(_duration_seconds(segment) for segment in segments[start:end])
+        # A clip is played, not sampled, so its length is its own — there is no
+        # 17n+5 grid to snap it to and snapping would price the strip wrong on
+        # the bar. A clip is always a run of one, so this is the whole pass.
+        if is_clip(segments[start]):
+            total += round(seconds * canvas.FPS)
+            continue
         total += canvas.frames_for_seconds(seconds)
         # A feathered seam re-generates its inherited run at the head of the pass
         # and trims it off after decode, so those frames are sampled but never
@@ -969,17 +1149,36 @@ def timeline_frames(data, segments=None, runs=None):
         # frame count in hand to say why.
         head = segments[start]
         if position and head.get("continue"):
-            try:
-                feather = int(head.get("feather") or 1)
-            except (TypeError, ValueError):
-                feather = 1
-            if feather > 1:
-                total -= feather
+            total -= _blend(head)
+        # ...and the blend at the far end, which a clip in front of this pass
+        # owns: those frames are re-generated at this pass's tail and trimmed
+        # off it, so they are sampled and never delivered just the same.
+        after = segments[end] if end < len(segments) else None
+        if after is not None and is_clip(after) and after.get("continue"):
+            total -= _blend(after)
     return total
 
 
+def _blend(segment):
+    """A seam's width as frames re-generated and then dropped. Read leniently —
+    a bad feather is `compile_request`'s to refuse, with the frame count in
+    hand to say why."""
+    try:
+        width = int(segment.get("feather") or 1)
+    except (TypeError, ValueError):
+        return 0
+    return width if width > 1 else 0
+
+
 def _duration_seconds(segment):
-    """A card's length, defaulting the way `compile_request` defaults it."""
+    """A card's length, defaulting the way `compile_request` defaults it.
+
+    A clip's is not a setting: it is the window of the file that plays, so the
+    trim decides it and the pill on the card only reports it.
+    """
+    if is_clip(segment):
+        spec = clip_spec(segment, 0)
+        return spec["duration"]
     try:
         return float(segment.get("duration_s", 6) or 0)
     except (TypeError, ValueError) as exc:
@@ -1188,7 +1387,14 @@ def timeline_payloads(data, image_size_lookup=None):
         for index in range(start, end):
             payload_of[index] = position
 
-        if end - start > 1:
+        if is_clip(head):
+            # Nothing to compile: a clip carries no prompt, no references and
+            # no checkpoint, so its payload is the file and the window, and the
+            # graph splices it. The seam keys below are read the same way they
+            # are for a generation — what happens at the cut in front of a card
+            # is a fact about the cut, not about how the card is made.
+            payloads.append({"clip": clip_spec(head, start)})
+        elif end - start > 1:
             payloads.append(group_payload(data, start, end))
         else:
             payloads.append({"request": _chained_request(
@@ -1200,11 +1406,16 @@ def timeline_payloads(data, image_size_lookup=None):
         # mistake worth refusing a whole timeline over. Read off the run's first
         # segment, which is the one the seam is actually in front of — the flags
         # on a merged segment describe a seam that no longer exists.
-        payload["continue"] = start > 0 and bool(head.get("continue"))
+        # A clip is not conditioned on anything, so the seam in front of it
+        # cannot be a continuation *into* it — what those switches mean on a
+        # clip card is the seam running the other way (the shot before it ends
+        # on the clip's first frame), which is read separately below.
+        live = start > 0 and not is_clip(head)
+        payload["continue"] = live and bool(head.get("continue"))
         # Independent of the picture: a hard cut whose music keeps playing is
         # an ordinary thing to want, and so is a match cut that resets the
         # sound. Two switches on the seam rather than one with three states.
-        payload["continue_audio"] = start > 0 and bool(head.get("continue_audio"))
+        payload["continue_audio"] = live and bool(head.get("continue_audio"))
 
         # Which earlier segment the seam inherits from — 1-based in the segment
         # data because that is the number on the card, a payload index here
@@ -1236,20 +1447,143 @@ def timeline_payloads(data, image_size_lookup=None):
     if len(payloads) == 1 and runs[0][1] - runs[0][0] > 1:
         return payloads
 
-    # Resolved the way a lone generation would resolve it — the first payload
-    # may take its aspect from its own keyframe — then imposed on the rest.
+    _stamp_clip_seams(segments, runs, payloads)
+
+    spec = _timeline_canvas(data, segments, payloads, image_size_lookup)
+    delivered = output_canvas(data, spec)
+    for payload in payloads:
+        payload["canvas"] = dict(spec)
+        if "clip" in payload:
+            # What the clip is conformed to on the way into the file: the size
+            # the generated passes *deliver*, which past a two-pass render is
+            # not the size they sample at. Written onto the payload rather than
+            # worked out in the graph, so the segment's cache key moves when
+            # the canvas does.
+            payload["clip"]["width"], payload["clip"]["height"] = delivered
+    return payloads
+
+
+def _stamp_clip_seams(segments, runs, payloads):
+    """The seam in front of a clip, written onto the pass *behind* it.
+
+    Every other seam is a fact about the card it sits in front of: that card is
+    generated, and the seam says what it starts from. A clip is not generated,
+    so a seam in front of one can only act the other way — the shot before it
+    ends on the clip's opening frame, and runs into the cut instead of arriving
+    at a still.
+
+    The switches live on the clip card all the same, because that is where the
+    seam is: the strip draws it there, and moving the clip moves it. What
+    changes is which payload they land on. Only the pass immediately in front
+    counts — `continue_from` is meaningless here, since what a generation can
+    end on is decided while it is being sampled and not afterwards.
+    """
+    for position, (start, _end) in enumerate(runs):
+        head = segments[start]
+        if not position or not is_clip(head):
+            continue
+        before = payloads[position - 1]
+        if "clip" in before:
+            # Clip into clip: two files played end to end, with nothing being
+            # generated on either side to condition. The switches say nothing
+            # here rather than being an error — reordering leaves them behind
+            # exactly as it leaves the ordinary seam flags behind.
+            continue
+        if head.get("continue"):
+            before["ends_on"] = True
+            width = int(head.get("feather") or 1)
+            if width > 1:
+                before["ends_feather"] = width
+        if head.get("continue_audio"):
+            before["ends_on_audio"] = True
+
+
+def _timeline_canvas(data, segments, payloads, image_size_lookup):
+    """The one geometry every pass is held to, and where it comes from.
+
+    Three sources, in order, and the order is the whole of the decision:
+
+    1. **The first pass's own answer.** A lone generation takes its aspect from
+       its keyframe if it has one, and payload 1 is compiled exactly as a lone
+       generation would be. Unchanged, and it is what every timeline without
+       supplied footage still does.
+    2. **The first supplied clip.** Footage is a fact — it was shot at the size
+       it was shot at, and cropping it to a pill's preference throws away
+       picture that cannot be got back. A ratio pill is a preference, so the
+       clip outranks it. The scale is still the slider's: generated video stops
+       at 896 and is off-distribution past 768, so a 1080p source is played at
+       the render's size and the card says so.
+    3. **The ratio pill**, which is what a strip of prompts has always used.
+
+    A clip is only consulted for its *aspect*; `canvas_from_image` is the same
+    call a keyframe goes through, so the clamp and the area cap are the ones
+    that already exist. `from_image` stays False when a clip decided it —
+    nothing in this generation is being matched to a still, and `encode.py`
+    reads that flag to decide whether a keyframe may be stretched onto the
+    canvas or has to be cover-cropped into it.
+    """
+    if is_clip(segments[0]):
+        # Payload 1 is footage: there is nothing to compile, and the clip is
+        # the piece's own framing whether or not a later one disagrees.
+        source = payloads[0]["clip"]
+        return _clip_canvas(
+            data, (source.get("source_width"), source.get("source_height")))
+
     try:
         first = compile_request(payloads[0]["request"], image_size_lookup)
     except CompileError as exc:
         raise CompileError(f"segment 1: {exc}") from exc
-    spec = {
+    if not first.ratio_from_image:
+        supplied = clip_size(segments)
+        if supplied:
+            return _clip_canvas(data, supplied)
+    return {
         "width": first.width, "height": first.height, "ratio": first.ratio,
         "label": first.ratio_label, "from_image": first.ratio_from_image,
         "clamped": first.ratio_clamped,
     }
-    for payload in payloads:
-        payload["canvas"] = dict(spec)
-    return payloads
+
+
+def _clip_canvas(data, size):
+    """The canvas a supplied clip's own dimensions give.
+
+    The spec every payload is pinned to is the canvas the *first* pass samples
+    at, so this resolves against `first_pass_edge` exactly as `compile_request`
+    does — otherwise a two-pass timeline would pin its refine target as its
+    sampling size. `output_canvas` is what the finished frames come out at.
+
+    Falls back to the ratio pill when the blob never recorded the clip's
+    dimensions — a hand-written card, where guessing would be worse than the
+    ratio the user can see on the bar.
+    """
+    width, height = size
+    short_edge = data.get("short_edge", canvas.NATIVE_SHORT_EDGE)
+    edge = first_pass_edge(data.get("sample_edge"), short_edge)
+    if not width or not height:
+        label = data.get("aspect", "16:9")
+        if label not in canvas.ASPECT_PRESETS:
+            raise CompileError(f"unknown aspect ratio {label!r}")
+        ratio = canvas.ASPECT_PRESETS[label]
+        resolved_w, resolved_h = canvas.resolve_canvas(ratio, edge)
+        return {"width": resolved_w, "height": resolved_h, "ratio": ratio,
+                "label": label, "from_image": False, "clamped": False}
+    resolved_w, resolved_h, ratio, clamped = canvas.canvas_from_image(width, height, edge)
+    return {"width": resolved_w, "height": resolved_h, "ratio": ratio,
+            "label": canvas.describe_ratio(ratio), "from_image": False,
+            "clamped": clamped}
+
+
+def output_canvas(data, spec):
+    """(width, height) the finished frames come out at.
+
+    The pinned spec is the sampling canvas, and a two-pass render refines up
+    from it — so what a generated pass *delivers* is the ratio at the slider's
+    own edge. A supplied clip is conformed to that rather than to the sampling
+    size, because what it has to match is the frames it is played beside. With
+    one pass the two are the same number and this is the identity.
+    """
+    return canvas.resolve_canvas(
+        spec["ratio"], data.get("short_edge", canvas.NATIVE_SHORT_EDGE))
 
 
 def _chained_request(data, index, segment, pool, global_cited, global_prompt):
@@ -1570,6 +1904,11 @@ def compile_segment(payload, image_size_lookup=None):
         continues_audio=bool(payload.get("continue_audio")),
         shots=int(payload.get("shots", 1)),
         feather=int(payload.get("feather", 1)),
+        # The seam on this pass's *far* side, stamped on by `timeline_payloads`
+        # when the pass after it is supplied footage.
+        ends_on=bool(payload.get("ends_on")),
+        ends_on_audio=bool(payload.get("ends_on_audio")),
+        ends_feather=int(payload.get("ends_feather", 1)),
         canvas_spec=CanvasSpec(**spec) if spec else None)
 
 

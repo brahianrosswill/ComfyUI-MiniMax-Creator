@@ -59,6 +59,9 @@ LAST_FRAME_NODE = "MiniMaxH3LastFrame"
 AUDIO_TAIL_NODE = "MiniMaxH3AudioTail"
 TRIM_NODE = "MiniMaxH3SeamTrim"
 REEL_NODE = "MiniMaxH3Reel"
+CLIP_NODE = "MiniMaxH3ClipReel"
+CLIP_FRAMES_NODE = "MiniMaxH3ClipFrames"
+CLIP_AUDIO_NODE = "MiniMaxH3ClipAudio"
 SAVE_NODE = "MiniMaxH3Save"
 
 # Where a render lands when the blob does not say. Under a folder of its own,
@@ -110,10 +113,18 @@ def compile_all(payloads, labels):
     Done before a single node is emitted so that a request which cannot compile,
     or which routes to a checkpoint nothing is connected to, fails now rather
     than after the first sampler pass has already run.
+
+    A supplied clip compiles to `None`: there is no request in it, no mode and
+    no checkpoint, and every caller below reads the absence as "this pass is
+    played rather than generated" rather than being handed a hollow `Compiled`
+    that would have to answer questions it has no answer to.
     """
     out = []
     for index, payload in enumerate(payloads):
         where = labels[index] if index < len(labels) else f"Segment {index + 1}"
+        if "clip" in payload:
+            out.append(None)
+            continue
         try:
             out.append(compiler.compile_segment(payload, media.image_size))
         except compiler.CompileError as exc:
@@ -130,9 +141,48 @@ def routed(compiled, labels):
     """
     where = {}
     for index, one in enumerate(compiled):
+        if one is None:
+            continue        # a supplied clip reaches for no weights at all
         label = labels[index] if index < len(labels) else f"Segment {index + 1}"
         where.setdefault(one.checkpoint, label)
     return where
+
+
+def is_clip_source(source):
+    """Whether a seam is inheriting from supplied footage rather than a pass.
+
+    `decoded` holds one entry per pass in play order: a generated pass leaves
+    the two links its decoders produced, and a clip leaves its own spec, since
+    it has no decoded frames anywhere in the graph to point at.
+    """
+    return source[0] == "clip"
+
+
+def inherited_frames(graph, source, feather):
+    """The run of frames a seam takes off the pass in front of it.
+
+    Two roads to the same tensor. From a generated pass it is the tail of a
+    batch that already exists, which is what `MiniMaxH3LastFrame` cuts. From a
+    supplied clip there is no batch — the file goes into the finished video
+    without being decoded — so the run is read out of the clip's own window,
+    bounded by the seam's width. `MiniMaxH3ClipFrames` returns exactly the run
+    asked for, so there is nothing left for a last-frame node to take.
+    """
+    if is_clip_source(source):
+        return graph.node(CLIP_FRAMES_NODE,
+                          clip_data=json.dumps(source[1], sort_keys=True),
+                          count=feather, at="tail").out(0)
+    return graph.node(LAST_FRAME_NODE, image=source[0],
+                      **({"count": feather} if feather > 1 else {})).out(0)
+
+
+def inherited_audio(graph, source, seconds):
+    """The stretch of sound a seam takes off the pass in front of it."""
+    if is_clip_source(source):
+        return graph.node(CLIP_AUDIO_NODE,
+                          clip_data=json.dumps(source[1], sort_keys=True),
+                          seconds=seconds, at="tail").out(0)
+    return graph.node(AUDIO_TAIL_NODE, audio=source[1], seconds=seconds).out(0)
 
 
 def emit(payloads, labels, weights, sampling, acceleration, unique_id,
@@ -176,6 +226,21 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                             # any earlier segment via the payload's continue_from
 
     for index, one in enumerate(compiled):
+        if one is None:
+            # Supplied footage. It joins the reel as a file and is never
+            # decoded into it — see `MiniMaxH3ClipReel`. What a later seam
+            # needs out of it is decoded then, from the clip's own window, and
+            # is bounded by the seam's width rather than by the clip's length.
+            spec = payloads[index]["clip"]
+            clip_inputs = {"clip_data": json.dumps(spec, sort_keys=True)}
+            if reel is not None:
+                clip_inputs["reel"] = reel
+            if spec.get("sound"):
+                clip_inputs["audio_vae"] = links.audio_vae
+            reel = graph.node(CLIP_NODE, **clip_inputs).out(0)
+            decoded.append(("clip", spec))
+            continue
+
         inputs = {
             "clip": links.clip,
             # sort_keys so an unchanged payload serialises identically every
@@ -205,15 +270,27 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             # segment, so a render of hard cuts has no dead nodes in it and a
             # Creator render has none at all. The count rides only on feathered
             # seams, so a classic seam's node inputs stay byte-identical.
-            inputs["prev_image"] = graph.node(
-                LAST_FRAME_NODE, image=source[0],
-                **({"count": one.feather} if one.feather > 1 else {})).out(0)
+            inputs["prev_image"] = inherited_frames(graph, source, one.feather)
         if one.continues_audio:
             # `one.audio_tail_s` rather than the timeline's setting directly:
             # compile clamps it to a feathered seam's overlap, and this is
             # where that decision reaches the graph.
-            inputs["prev_audio"] = graph.node(
-                AUDIO_TAIL_NODE, audio=source[1], seconds=one.audio_tail_s).out(0)
+            inputs["prev_audio"] = inherited_audio(graph, source, one.audio_tail_s)
+        if one.ends_on or one.ends_on_audio:
+            # The seam running the other way: the pass after this one is
+            # supplied footage, and this generation ends on its opening rather
+            # than cutting to it. Always the pass immediately after — what a
+            # generation can end on is decided while it is sampled, so there is
+            # no reaching further forward the way a seam reaches back.
+            ahead = payloads[index + 1]["clip"]
+            if one.ends_on:
+                inputs["next_image"] = graph.node(
+                    CLIP_FRAMES_NODE, clip_data=json.dumps(ahead, sort_keys=True),
+                    count=one.ends_feather, at="head").out(0)
+            if one.ends_on_audio:
+                inputs["next_audio"] = graph.node(
+                    CLIP_AUDIO_NODE, clip_data=json.dumps(ahead, sort_keys=True),
+                    seconds=one.ends_tail_s, at="head").out(0)
 
         segment = graph.node(SEGMENT_NODE, **inputs)
 
@@ -286,12 +363,17 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
         # this one attenuates anything hot enough to clip on the way to a file.
         images = graph.node("VAEDecode", samples=sampled.out(0), vae=links.vae).out(0)
         audio = graph.node("VAEDecodeAudio", samples=sampled.out(0), vae=links.audio_vae).out(0)
-        if one.feather > 1:
-            # A feathered segment re-generates the run it inherited at its own
-            # head; joined untrimmed, the source's tail would play twice. The
-            # trimmed pair is also what later seams inherit from — their tail
-            # is identical either way, and this is the segment as delivered.
-            trimmed = graph.node(TRIM_NODE, images=images, audio=audio, frames=one.feather)
+        if one.feather > 1 or one.ends_feather > 1:
+            # A blended segment re-generates the runs it shares with its
+            # neighbours — the one it inherited at its head, the clip's opening
+            # at its tail. Played untrimmed, those moments would come round
+            # twice. The trimmed pair is also what later seams inherit from —
+            # their tail is identical either way, and this is the segment as
+            # delivered.
+            trimmed = graph.node(
+                TRIM_NODE, images=images, audio=audio,
+                frames=one.feather if one.feather > 1 else 0,
+                **({"tail": one.ends_feather} if one.ends_feather > 1 else {}))
             images, audio = trimmed.out(0), trimmed.out(1)
         decoded.append((images, audio))
 

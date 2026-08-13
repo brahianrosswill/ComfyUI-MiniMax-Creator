@@ -703,6 +703,98 @@ check("...and still continues from the pass in front of it", second["continue"],
 check("both passes are held to one canvas",
       first["canvas"] == second["canvas"], True)
 
+# ---- supplied clips ---------------------------------------------------------
+#
+# A clip card is a pass with no sampler in front of it. The claim worth pinning
+# is what does *not* appear: no segment node, no KSampler, no decode. The file
+# reaches the finished video through the reel, and the only thing decoded out
+# of it is whatever a seam beside it asks for.
+
+
+def with_clip(*segments, **rest):
+    return build(blob(prompt="a red room", segments=list(segments), **rest)).expand
+
+
+def by_class(graph):
+    out = {}
+    for node_id, node in graph.items():
+        out.setdefault(node["class_type"], []).append((node_id, node["inputs"]))
+    return out
+
+
+CLIP = {"kind": "clip", "filename": "footage.mp4", "duration_s": 4,
+        "width": 1920, "height": 1080}
+
+spliced = by_class(with_clip({"prompt": "wide", "duration_s": 5}, dict(CLIP)))
+check("a clip is not generated", len(spliced["MiniMaxH3TimelineSegment"]), 1)
+check("...and costs no sampler", len(spliced["KSampler"]), 1)
+check("...and is not decoded", len(spliced["VAEDecode"]), 1)
+check("it reaches the reel as a file", len(spliced["MiniMaxH3ClipReel"]), 1)
+clip_id, clip_inputs = spliced["MiniMaxH3ClipReel"][0]
+check("...behind the pass in front of it",
+      spliced["MiniMaxH3Reel"][0][0], clip_inputs["reel"][0])
+check("...and the save reads the clip's end of the reel",
+      spliced["MiniMaxH3Save"][0][1]["reel"][0], clip_id)
+spec = json.loads(clip_inputs["clip_data"])
+check("the clip carries its file and its window",
+      (spec["filename"], spec["start"], spec["duration"]), ("footage.mp4", 0.0, 4.0))
+check("...and the size it is conformed to, which is the render's",
+      (spec["width"], spec["height"]), (1344, 768))
+# Its sound is resampled to whatever the generated passes decode at, which is a
+# fact about the weights — so the VAE is wired in for the rate alone.
+check("a clip with sound is wired to the audio VAE",
+      "audio_vae" in clip_inputs, True)
+muted = by_class(with_clip({"prompt": "wide", "duration_s": 5}, {**CLIP, "sound": False}))
+check("a muted clip needs no VAE at all",
+      "audio_vae" in muted["MiniMaxH3ClipReel"][0][1], False)
+
+# A clip alone is a whole render: nothing is sampled, nothing is decoded, and
+# the file is copied through the writer.
+alone = by_class(with_clip(dict(CLIP)))
+for absent in ("MiniMaxH3TimelineSegment", "KSampler", "VAEDecode", "MiniMaxH3Reel"):
+    check(f"a clip on its own emits no {absent}", absent in alone, False)
+check("...and still writes a file", len(alone["MiniMaxH3Save"]), 1)
+
+# ---- a seam beside supplied footage -----------------------------------------
+#
+# What a seam inherits is decoded frames, and a clip has none in the graph — so
+# the run is read out of the clip's own window instead, bounded by the seam's
+# width rather than by the clip's length. That is the whole memory argument, as
+# a graph shape: a clip nothing continues from is never decoded at all.
+
+seamed = by_class(with_clip(
+    dict(CLIP),
+    {"prompt": "after", "duration_s": 5, "continue": True, "continue_audio": True,
+     "feather": 22}))
+check("a segment after a clip reads frames out of it",
+      len(seamed["MiniMaxH3ClipFrames"]), 1)
+frames_inputs = seamed["MiniMaxH3ClipFrames"][0][1]
+check("...only as many as the blend crosses",
+      (frames_inputs["count"], frames_inputs["at"]), (22, "tail"))
+check("...and never through a last-frame node, which has no batch to cut",
+      "MiniMaxH3LastFrame" in seamed, False)
+check("the sound comes off the same window",
+      (seamed["MiniMaxH3ClipAudio"][0][1]["at"],
+       round(seamed["MiniMaxH3ClipAudio"][0][1]["seconds"], 4)),
+      ("tail", round(22 / 24, 4)))
+check("...and never through an audio-tail node", "MiniMaxH3AudioTail" in seamed, False)
+segment_after = seamed["MiniMaxH3TimelineSegment"][0][1]
+check("the continuing segment takes the clip's frames",
+      segment_after["prev_image"][0], seamed["MiniMaxH3ClipFrames"][0][0])
+check("...and the clip's sound",
+      segment_after["prev_audio"][0], seamed["MiniMaxH3ClipAudio"][0][0])
+
+# A hard cut after a clip decodes nothing out of it.
+cut = by_class(with_clip(dict(CLIP), {"prompt": "after", "duration_s": 5}))
+for absent in ("MiniMaxH3ClipFrames", "MiniMaxH3ClipAudio"):
+    check(f"a hard cut after a clip emits no {absent}", absent in cut, False)
+
+# The refusals reach the node rather than surfacing as a graph error.
+expect_error("a clip cannot be merged into a pass",
+             lambda: with_clip({"prompt": "a", "duration_s": 5},
+                               {**CLIP, "merge": True}),
+             "cannot share a generation")
+
 if FAILURES:
     print(f"{len(FAILURES)} failure(s):")
     for failure in FAILURES:

@@ -125,6 +125,11 @@ def _stamps(data):
     for segment in data.get("segments", []):
         if not isinstance(segment, dict):
             continue
+        # A supplied clip's own file. Without this, replacing the footage under
+        # a card that has not otherwise changed would be a cache hit and the
+        # render would keep playing the clip that is no longer there.
+        if segment.get("filename"):
+            stamp(media.resolve, segment, "filename")
         for asset in segment.get("assets", []) or []:
             stamp(media.resolve, asset, "filename")
         for entry in segment.get("loras", []) or []:
@@ -278,6 +283,10 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                     tooltip="An earlier segment's last frame, when this segment continues from it."),
                 io.Audio.Input("prev_audio", optional=True,
                     tooltip="The tail of an earlier segment's soundtrack, when this segment's sound continues from it."),
+                io.Image.Input("next_image", optional=True,
+                    tooltip="The opening frames of the supplied clip this segment runs into."),
+                io.Audio.Input("next_audio", optional=True,
+                    tooltip="The opening of that clip's soundtrack, when this segment's sound runs into it."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -301,7 +310,8 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
     @classmethod
     def execute(cls, clip, segment_data, vae=None, audio_vae=None,
                 model_fl2va=None, model_ref2va=None,
-                prev_image=None, prev_audio=None) -> io.NodeOutput:
+                prev_image=None, prev_audio=None,
+                next_image=None, next_audio=None) -> io.NodeOutput:
         payload = _parse(segment_data)
 
         # Which segment the queue has reached, told to the stage the moment
@@ -376,7 +386,28 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                     "audio reached it — the Timeline node should have wired some."
                 )
             loaded[encoder.PREV_AUDIO] = {"audio": prev_audio}
-        if compiled.continues or compiled.continues_audio:
+        if compiled.ends_on:
+            if next_image is None:
+                raise ValueError(
+                    "This segment runs into the clip after it but no frame "
+                    "reached it — the Timeline node should have wired one."
+                )
+            if next_image.shape[0] < compiled.ends_feather:
+                raise ValueError(
+                    f"this seam blends {compiled.ends_feather} frames of the "
+                    f"clip that follows but only {next_image.shape[0]} reached "
+                    f"it — shorten the blend, or use more of the clip"
+                )
+            loaded[encoder.NEXT_FRAME] = {"image": next_image[:compiled.ends_feather]}
+        if compiled.ends_on_audio:
+            if next_audio is None:
+                raise ValueError(
+                    "This segment's sound runs into the clip after it but no "
+                    "audio reached it — the Timeline node should have wired some."
+                )
+            loaded[encoder.NEXT_AUDIO] = {"audio": next_audio}
+        if (compiled.continues or compiled.continues_audio
+                or compiled.ends_on or compiled.ends_on_audio):
             # What core's payload assembly cannot express — keyframes alongside
             # references, guides at real timeline positions — is repaired just
             # before the forward; `payload.py` says exactly what and why. Inert
@@ -458,12 +489,15 @@ class MiniMaxH3LastFrame(io.ComfyNode):
 
 
 class MiniMaxH3SeamTrim(io.ComfyNode):
-    """A feathered segment minus the run it inherited.
+    """A blended segment minus the runs it shares with its neighbours.
 
-    The pinned context occupies the first frames of the segment's own timeline
-    and is re-generated there, so an untrimmed join would play the source's
-    tail twice. Trimmed after decode — picture and the matching stretch of
-    sound together, so the two stay in phase across the cut.
+    A blend pins context frames on this segment's own timeline and
+    re-generates them there, so an untrimmed segment would play them twice —
+    once here and once in the pass they came from. `frames` is the run
+    inherited from the pass in front, at the head; `tail` is the opening of a
+    supplied clip this segment runs into, at the end. Trimmed after decode —
+    picture and the matching stretch of sound together, so the two stay in
+    phase across the cut.
     """
 
     @classmethod
@@ -472,33 +506,45 @@ class MiniMaxH3SeamTrim(io.ComfyNode):
             node_id="MiniMaxH3SeamTrim",
             display_name="MiniMax H3 Seam Trim",
             category="MiniMax/internal",
-            description="Drops a feathered seam's re-generated overlap from the front of a decoded segment.",
+            description="Drops a blended seam's re-generated overlap off a decoded segment.",
             is_dev_only=True,
             inputs=[
                 io.Image.Input("images"),
                 io.Audio.Input("audio"),
                 io.Int.Input("frames", default=0, min=0, max=64),
+                # Optional, so a head-only trim's node inputs — and its cache
+                # key — are byte-identical to what they were before the seam
+                # could run the other way.
+                io.Int.Input("tail", default=0, min=0, max=64, optional=True),
             ],
             outputs=[io.Image.Output(display_name="images"), io.Audio.Output(display_name="audio")],
         )
 
     @classmethod
-    def execute(cls, images, audio, frames) -> io.NodeOutput:
-        frames = int(frames)
-        if frames <= 0:
+    def execute(cls, images, audio, frames, tail=0) -> io.NodeOutput:
+        frames, tail = max(0, int(frames)), max(0, int(tail))
+        if not frames and not tail:
             return io.NodeOutput(images, audio)
-        if images.shape[0] <= frames:
-            # compile refuses a feather of half the segment or more, so hitting
+        if images.shape[0] <= frames + tail:
+            # compile refuses a blend of half the segment or more, so hitting
             # this means the graph was built against different arithmetic.
             raise ValueError(
-                f"cannot trim {frames} inherited frames off a "
+                f"cannot trim {frames + tail} blended frames off a "
                 f"{images.shape[0]}-frame segment"
             )
         rate = int(audio["sample_rate"])
-        samples = int(round(frames / canvas.FPS * rate))
+        head_samples = int(round(frames / canvas.FPS * rate))
+        # Counted off the end rather than as an absolute index: the decoded
+        # soundtrack is the same span as the picture but not the same length,
+        # and an index computed from the frame count would drift by the
+        # rounding.
+        tail_samples = int(round(tail / canvas.FPS * rate))
+        waveform = audio["waveform"][..., head_samples:]
+        if tail_samples:
+            waveform = waveform[..., :-tail_samples]
         return io.NodeOutput(
-            images[frames:],
-            {"waveform": audio["waveform"][..., samples:], "sample_rate": rate},
+            images[frames:images.shape[0] - tail] if tail else images[frames:],
+            {"waveform": waveform, "sample_rate": rate},
         )
 
 
@@ -546,6 +592,141 @@ class MiniMaxH3Reel(io.ComfyNode):
         # node's cached output, and growing it in place would rewrite history
         # every time a later pass re-ran.
         return io.NodeOutput([*(reel or []), {"images": images, "audio": audio}])
+
+
+class MiniMaxH3ClipReel(io.ComfyNode):
+    """Supplied footage, added to the reel as a file rather than as frames.
+
+    The one node in the chain that decodes nothing. A clip card is part of the
+    finished video, and the finished video is written frame by frame — so the
+    file only has to be *named* here and `mux.py` demuxes, conforms and
+    re-encodes it straight into the container. Two minutes of 768p footage
+    would be 35 GB as a tensor; this way it is a dict.
+
+    The audio VAE is taken as an input for one number: the rate its decoder
+    outputs at. That is the rate the generated passes' sound arrives at, so it
+    is the rate this clip has to be resampled to, and it is a fact about the
+    weights on this disk rather than a constant this package may assume.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3ClipReel",
+            display_name="MiniMax H3 Clip",
+            category="MiniMax/internal",
+            description="Adds a supplied clip to the reel, without decoding it.",
+            is_dev_only=True,
+            inputs=[
+                io.String.Input("clip_data", multiline=True),
+                io.Custom(REEL_TYPE).Input("reel", optional=True),
+                io.Vae.Input("audio_vae", optional=True,
+                    tooltip="Only for its output sample rate — the clip's sound is "
+                            "resampled to whatever the generated passes decode at."),
+            ],
+            outputs=[io.Custom(REEL_TYPE).Output(display_name="reel")],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, clip_data, **kwargs):
+        try:
+            return (clip_data, _stamps({"segments": [json.loads(clip_data)]}))
+        except Exception:
+            return (clip_data, ())
+
+    @classmethod
+    def execute(cls, clip_data, reel=None, audio_vae=None) -> io.NodeOutput:
+        spec = dict(_parse(clip_data))
+        # Resolved here rather than in `mux.py`, which knows nothing about
+        # ComfyUI's folders and is loadable on its own because of it.
+        spec["name"] = spec["filename"]
+        spec["path"] = media.resolve(spec.pop("filename"))
+        if spec.get("sound"):
+            if audio_vae is None:
+                # The graph wires it whenever the clip plays with its sound, so
+                # reaching here means a hand-built graph — say which input is
+                # missing rather than writing the clip at the wrong pitch.
+                raise ValueError(
+                    "this clip plays with its sound, so it needs the audio VAE "
+                    "on 'audio_vae' to know what rate to resample it to."
+                )
+            spec["rate"] = mux.decode_sample_rate(audio_vae)
+            spec["channels"] = mux.decode_channels(audio_vae)
+        return io.NodeOutput([*(reel or []), {"clip": spec}])
+
+
+class MiniMaxH3ClipFrames(io.ComfyNode):
+    """The frames a seam beside a supplied clip inherits.
+
+    The counterpart to `MiniMaxH3LastFrame`, for a pass that has no decoded
+    frames because it was never generated. `at` says which end: the tail is
+    what a generation after the clip continues from, the head is what a
+    generation *before* it ends on.
+
+    Its own node rather than an output of the clip's reel node, so that a clip
+    nothing continues from is never decoded at all. What is decoded here is the
+    seam's width — one frame, or a feathered run of at most 39.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3ClipFrames",
+            display_name="MiniMax H3 Clip Frames",
+            category="MiniMax/internal",
+            description="The first or last frames of a supplied clip, for a seam beside it.",
+            is_dev_only=True,
+            inputs=[
+                io.String.Input("clip_data", multiline=True),
+                io.Int.Input("count", default=1, min=1, max=64),
+                io.Combo.Input("at", options=["head", "tail"], default="tail"),
+            ],
+            outputs=[io.Image.Output()],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, clip_data, **kwargs):
+        try:
+            return (clip_data, _stamps({"segments": [json.loads(clip_data)]}))
+        except Exception:
+            return (clip_data, ())
+
+    @classmethod
+    def execute(cls, clip_data, count=1, at="tail") -> io.NodeOutput:
+        return io.NodeOutput(media.clip_frames(_parse(clip_data), int(count), at))
+
+
+class MiniMaxH3ClipAudio(io.ComfyNode):
+    """The sound a seam beside a supplied clip inherits. See `MiniMaxH3ClipFrames`."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3ClipAudio",
+            display_name="MiniMax H3 Clip Audio",
+            category="MiniMax/internal",
+            description="The first or last seconds of a supplied clip's sound, for a seam beside it.",
+            is_dev_only=True,
+            inputs=[
+                io.String.Input("clip_data", multiline=True),
+                io.Float.Input("seconds", default=compiler.DEFAULT_AUDIO_TAIL_S,
+                               min=0.1, max=compiler.MAX_AUDIO_TAIL_S, step=0.1),
+                io.Combo.Input("at", options=["head", "tail"], default="tail"),
+            ],
+            outputs=[io.Audio.Output()],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, clip_data, **kwargs):
+        try:
+            return (clip_data, _stamps({"segments": [json.loads(clip_data)]}))
+        except Exception:
+            return (clip_data, ())
+
+    @classmethod
+    def execute(cls, clip_data, seconds=compiler.DEFAULT_AUDIO_TAIL_S,
+                at="tail") -> io.NodeOutput:
+        return io.NodeOutput(media.clip_audio(_parse(clip_data), float(seconds), at))
 
 
 class MiniMaxH3Save(io.ComfyNode):
@@ -634,4 +815,5 @@ class MiniMaxH3Save(io.ComfyNode):
 # package, so there is one place that says what this node pack contains.
 NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3LastFrame,
          MiniMaxH3SeamTrim, MiniMaxH3AudioTail, MiniMaxH3Reel,
+         MiniMaxH3ClipReel, MiniMaxH3ClipFrames, MiniMaxH3ClipAudio,
          MiniMaxH3Save]

@@ -148,6 +148,59 @@ def load_video(filename, want_audio=False, trim=None, max_seconds=None):
     return frames, audio
 
 
+# A supplied clip's window is cut at the second and its frames are resampled to
+# 24 fps, so asking for exactly `count / 24` seconds can come back one frame
+# short of `count`. The window is widened by this much and the run is taken
+# from the end of what arrives — cheap, since it is still a seek window and not
+# the clip.
+_SEAM_SLACK_S = 0.5
+
+
+def _clip_window(spec):
+    """(start, end) of a clip card's own stretch, in the source's seconds."""
+    start = float(spec.get("start") or 0.0)
+    return start, start + float(spec.get("duration") or 0.0)
+
+
+def clip_frames(spec, count, at="tail"):
+    """The first or last `count` frames of a clip card's window, at 24 fps.
+
+    What a seam beside supplied footage inherits, and the whole of what the
+    clip is ever decoded into memory for: at the head it is one frame (the
+    shot before it ends there), at the tail a feathered run of at most 39. The
+    clip itself reaches the finished file without being decoded at all — see
+    `mux._write_clip` — so this is bounded by the seam's width rather than by
+    the clip's length, and a five-minute source costs what a five-second one
+    does.
+    """
+    start, end = _clip_window(spec)
+    span = count / TARGET_FPS + _SEAM_SLACK_S
+    window = (start, min(end, start + span)) if at == "head" \
+        else (max(start, end - span), end)
+    frames, _ = load_video(spec["filename"], trim=window)
+    if frames.shape[0] < count:
+        raise MediaError(
+            f"{spec['filename']!r}: this seam needs {count} frames and the "
+            f"clip's segment only holds {frames.shape[0]} at 24 fps — shorten "
+            f"the blend, or use more of the clip"
+        )
+    return frames[:count] if at == "head" else frames[-count:]
+
+
+def clip_audio(spec, seconds, at="tail"):
+    """The first or last `seconds` of a clip card's soundtrack.
+
+    Refused rather than silenced when the file carries no sound: a seam that
+    inherits silence is a real thing to ask for, but it is not what "carry the
+    clip's sound across" means, and inventing it here would hide a clip the
+    user thought was noisy.
+    """
+    start, end = _clip_window(spec)
+    window = (start, min(end, start + seconds)) if at == "head" \
+        else (max(start, end - seconds), end)
+    return load_audio(spec["filename"], trim=window)
+
+
 def load_all(compiled):
     """Every file a `Compiled` names -> {handle: decoded media}, for `encode`.
 

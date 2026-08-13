@@ -110,9 +110,23 @@ def _read_header(path):
     import av  # ComfyUI's own decoder stack; imported here so the listing route never needs it.
 
     with av.open(path) as container:
+        # The picture's own size, for a clip card: it is what the timeline's
+        # aspect comes from when footage is cut into the strip, and storing it
+        # in the blob is what keeps `compile.py` free of disk access. Rotated
+        # sources report their storage size, and the display swap is applied
+        # here so the card and the render agree with the player.
+        stream = next(iter(container.streams.video), None)
+        width = height = None
+        if stream is not None:
+            width, height = int(stream.width), int(stream.height)
+            rotation = int(getattr(stream, "rotation", 0) or 0) % 180
+            if rotation:
+                width, height = height, width
         return {
             "has_audio": bool(container.streams.audio),
             "duration": float(container.duration / av.time_base) if container.duration else None,
+            "width": width,
+            "height": height,
         }
 
 

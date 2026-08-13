@@ -1231,11 +1231,6 @@ check("a still compiles direct past native", still_request.get("upscale"), "dire
 check("...and samples at the slider's own size",
       compiler.compile_request({**still_request, "aspect": "16:9"}).refine, None)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
 # --- the reference pool, one pass ---------------------------------------------
 #
 # In one pass the shots share a single merged reference list already; a pool
@@ -1266,8 +1261,12 @@ pool_global = single([segment("she waits", duration_s=5),
                               "role": "reference", "filename": "sheet.png"}])
 check("a global citation reaches the one-pass request",
       [a.filename for a in pool_global.ref_images], ["sheet.png"])
+# Under its own pool handle: the global prompt opens shot 1 un-renamed, so the
+# merged pool has to still call the asset @ref-1 for the citation to resolve.
+# Read past the shot marker `contextir` writes in front of it — what is being
+# checked is the substitution, not where the description starts.
 check("...under its own pool handle, so the join's citation resolves",
-      pool_global.body.startswith("the piece follows <Picture 1>."), True)
+      "the piece follows <Picture 1>." in pool_global.body, True)
 check("...as a reference generation", pool_global.mode, "REF2VA")
 
 # ---- passes -----------------------------------------------------------------
@@ -1366,4 +1365,132 @@ check("a seam into a merged pass resolves to the pass",
                         segment("d", **{"continue": True, "continue_from": 1})]})],
       [None, None, 0])
 
+# ---- supplied clips ---------------------------------------------------------
+#
+# A card that is not a generation: footage the user already has, cut into the
+# strip. It compiles to a payload with no request in it at all, which is the
+# claim every branch below rests on — there is no prompt to write, no mode to
+# derive and no checkpoint to route to.
+
+
+def clip(filename="shot.mp4", **rest):
+    return {"kind": "clip", "filename": filename, **rest}
+
+
+def clip_payloads(segments, image_size_lookup=None, **rest):
+    return compiler.timeline_payloads({"segments": segments, **rest}, image_size_lookup)
+
+
+one_clip = clip_payloads([segment("wide", duration_s=5),
+                          clip(duration_s=3, width=1920, height=1080)])
+check("a clip card is a payload of its own", len(one_clip), 2)
+check("...carrying the file and the window, and no request",
+      sorted(one_clip[1]), ["canvas", "clip", "continue", "continue_audio"])
+check("...with the whole file when it is not trimmed",
+      (one_clip[1]["clip"]["start"], one_clip[1]["clip"]["duration"]), (0.0, 3.0))
+check("...and its sound on, which is what a clip usually comes for",
+      one_clip[1]["clip"]["sound"], True)
+
+# The trim is the window, and it is what decides the card's length: a clip's
+# duration is not a setting, it is how much of the file plays.
+trimmed = clip_payloads([clip(duration_s=30, trim={"start": 2.0, "end": 6.5})])
+check("a trimmed clip plays its window",
+      (trimmed[0]["clip"]["start"], trimmed[0]["clip"]["duration"]), (2.0, 4.5))
+check("...and that is the length the budget counts",
+      compiler.timeline_frames({"segments": [clip(duration_s=30, trim={"start": 2.0, "end": 6.5})]}),
+      round(4.5 * canvas.FPS))
+# Nothing samples a clip, so there is no 17n+5 grid for it to land on — a
+# generated card of the same length is snapped and this one is not.
+check("a clip is counted at its own length, unsnapped",
+      compiler.timeline_frames({"segments": [clip(duration_s=3)]}), 72)
+check("...where a generated card of the same length is snapped",
+      compiler.timeline_frames({"segments": [segment("x", duration_s=3)]}),
+      canvas.frames_for_seconds(3))
+expect_error("a clip with no length is refused",
+             lambda: clip_payloads([clip()]), "needs its length")
+expect_error("...and one with no file",
+             lambda: clip_payloads([clip(filename="", duration_s=3)]), "names no file")
+
+# What a clip cannot be part of. Merging says two cards are one sampler pass,
+# and there is no sampler here — refused rather than ignored, because a strip
+# that dropped the flag would price itself wrong on the bar and then fail in
+# the graph.
+expect_error("a clip cannot be merged into the pass before it",
+             lambda: clip_payloads([segment("a"), clip(duration_s=3, merge=True)]),
+             "cannot share a generation")
+expect_error("...and nothing can be merged into a clip",
+             lambda: clip_payloads([clip(duration_s=3), merged("b")]),
+             "no generation there to merge into")
+expect_error("a timeline holding footage is not one pass",
+             lambda: clip_payloads([segment("a"), clip(duration_s=3)], render="single"),
+             "cannot be rendered as one pass")
+
+# The seam in front of a clip does not continue *into* it — a clip is not
+# conditioned on anything. (What those switches mean on a clip card is the seam
+# running the other way, which is the shot before it ending on its first frame.)
+into = clip_payloads([segment("a"), clip(duration_s=3, **{"continue": True,
+                                                          "continue_audio": True})])
+check("a clip is never conditioned on the segment before it",
+      (into[1]["continue"], into[1]["continue_audio"]), (False, False))
+
+# A generation *after* a clip continues from it exactly as it would from a
+# generated pass: what a seam inherits is decoded frames, and by the time it is
+# crossed the clip's frames exist.
+after = clip_payloads([clip(duration_s=3, width=1920, height=1080),
+                       segment("b", duration_s=5, **{"continue": True, "feather": 22,
+                                                     "continue_audio": True})])
+check("a segment after a clip continues from it",
+      (after[1]["continue"], after[1]["continue_audio"], after[1]["feather"]),
+      (True, True, 22))
+
+# ---- the canvas a clip sets -------------------------------------------------
+#
+# Footage was shot at the size it was shot at, and cropping it to a pill's
+# preference throws away picture that cannot be got back. So a clip outranks
+# the ratio pill — but not a keyframe on segment 1, which is the rule that
+# already existed and that every timeline without footage still follows.
+
+vertical = clip_payloads([segment("a", duration_s=5),
+                          clip(duration_s=3, width=1080, height=1920)],
+                         aspect="16:9", short_edge=768)
+check("a clip's own shape sets the timeline's, over the pill",
+      vertical[0]["canvas"]["width"] < vertical[0]["canvas"]["height"], True)
+check("...for every pass, since they are played end to end",
+      vertical[0]["canvas"], vertical[1]["canvas"])
+check("...and the slider still owns the scale",
+      min(vertical[0]["canvas"]["width"], vertical[0]["canvas"]["height"]), 768)
+# `from_image` says a keyframe in this generation set the canvas, and `encode`
+# reads it to decide whether a keyframe may be stretched onto the canvas or has
+# to be cropped into it. A clip is not a keyframe and sets nothing to match.
+check("...without claiming a keyframe set it",
+      vertical[0]["canvas"]["from_image"], False)
+
+check("a keyframe on segment 1 still wins",
+      clip_payloads([segment("a", duration_s=5, assets=[ref("img-1", "z.png", "first_frame")]),
+                     clip(duration_s=3, width=1080, height=1920)],
+                    image_size_lookup=lambda _f: (1500, 1000))[0]["canvas"]["from_image"],
+      True)
+check("a clip that never recorded its size leaves the pill alone",
+      clip_payloads([segment("a", duration_s=5), clip(duration_s=3)],
+                    aspect="16:9")[0]["canvas"]["label"], "16:9")
+check("the first clip decides when two disagree",
+      clip_payloads([clip("a.mp4", duration_s=3, width=1080, height=1920),
+                     clip("b.mp4", duration_s=3, width=1920, height=1080)]
+                    )[0]["canvas"]["width"] < 768 * 2, True)
+
+# What the clip is conformed to on the way into the file is the size the
+# generated passes *deliver* — which past a two-pass render is not the size
+# they sample at.
+two = clip_payloads([segment("a", duration_s=5), clip(duration_s=3)],
+                    aspect="16:9", short_edge=896, upscale="two_pass", sample_edge=768)
+check("a two-pass timeline samples under its target",
+      two[0]["canvas"]["height"], 768)
+check("...and the clip is conformed to what comes out, not to what is sampled",
+      two[1]["clip"]["height"], 896)
+
+if FAILURES:
+    print(f"{len(FAILURES)} failure(s):")
+    for failure in FAILURES:
+        print("  -", failure)
+    sys.exit(1)
 print("all contract tests passed")
