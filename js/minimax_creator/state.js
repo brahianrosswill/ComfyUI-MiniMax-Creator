@@ -1622,6 +1622,11 @@ export function timelineCheckpoints(timeline) {
 /** The one checkpoint a pass runs on. Its shots are merged into a single
  *  request, so a reference in any of them makes the whole pass Ref2VA. */
 export function passCheckpoint(segments) {
+  // Supplied footage is played rather than sampled, so it routes to no
+  // checkpoint at all — and a clip is never merged, so a pass holding one
+  // holds nothing else. Answered before `checkpoint()`, which would ask a clip
+  // card for the references it has no place to keep.
+  if (segments.some(isClip)) return null;
   if (segments.length === 1) return checkpoint(segments[0]);
   if (segments.some(hasReferences)) return "ref2va";
   const pin = segments.map((s) => s.checkpoint).find((c) => c && c !== "auto");

@@ -1660,6 +1660,10 @@ export class TimelineBody {
         style: { flexGrow: String(Math.max(1, total)) },
       }, pass.segments.map((segment, offset) => {
         const index = pass.start + offset;
+        // A clip's length is the window that plays, not the file's, and it has
+        // no mode: nothing is sampled, so there is no route to name.
+        const seconds = S.segmentSeconds(segment);
+        const what = S.isClip(segment) ? t("clip") : S.mode(segment);
         // A seam only exists in front of a pass. Inside one the cut is a line
         // of the description, so the block reads as a shot rather than a join.
         const continues = !offset && index > 0 && S.continues(segment);
@@ -1671,23 +1675,23 @@ export class TimelineBody {
         const cut = !offset && index > 0 && !continues;
         return el("div", {
           class: `mmc-tl-tick${continues ? " on" : ""}${cut ? " cut" : ""}`,
-          style: { flexGrow: String(Math.max(1, segment.duration_s)) },
+          style: { flexGrow: String(Math.max(1, seconds)) },
           title: shared
             ? (offset
                 ? t("Shot {n} · {s} s · cuts in at {time} of this pass",
-                    { n: index + 1, s: segment.duration_s, time: S.shotTime(at[offset]) })
+                    { n: index + 1, s: seconds, time: S.shotTime(at[offset]) })
                 : t("Shot {n} · {s} s · opens a pass of {count}",
-                    { n: index + 1, s: segment.duration_s, count: pass.segments.length }))
+                    { n: index + 1, s: seconds, count: pass.segments.length }))
             : (continues
                 ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
-                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
+                    { n: index + 1, s: seconds, mode: what,
                       from: S.continueSource(segment, index) })
                 : t("Segment {n} · {s} s · {mode} · hard cut",
-                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
+                    { n: index + 1, s: seconds, mode: what })),
         }, [
           ...(continues ? [icon("link", 13)] : []),
           el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
-          el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
+          el("span", { class: "mmc-tl-tick-s", text: `${Math.round(seconds * 10) / 10}s` }),
         ]);
       }));
     }));

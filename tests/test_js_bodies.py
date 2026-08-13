@@ -170,6 +170,40 @@ for (const [cls, widget, blob] of [
   }
 }
 
+// A strip with supplied footage in it, on the node and in the modal.
+//
+// A clip card is not a generation and holds none of one's machinery — no
+// assets, no prompt, no checkpoint — so every accessor the two renders call
+// over the segments has to answer for it without asking it a sampler's
+// question. One that does throws mid-render and takes the whole body with it,
+// which is invisible from Python and total from the user's side: the strip
+// stops redrawing and the card never appears.
+try {
+  const clipBlob = JSON.stringify({
+    version: 2, render: "chained", prompt: "a corridor", aspect: "16:9", short_edge: 768,
+    segments: [
+      { prompt: "shot 1", duration_s: 5, assets: [], loras: [] },
+      { kind: "clip", filename: "footage/take-3.mp4", duration_s: 12.5,
+        width: 1920, height: 1080, continue: true, feather: 22 },
+      { prompt: "shot 3", duration_s: 5, assets: [], loras: [], continue: true },
+    ],
+  });
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", clipBlob);
+  await ext.nodeCreated(node);
+  const body = node.mmcBody;
+  out.clip = { mounted: !!node.dom, node: body.root.text };
+  const { openTimeline } = await import("./js/minimax_creator/timeline.js");
+  openTimeline({ timeline: body.timeline, onCommit: () => body.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  out.clip.modal = document.body.children.at(-1).text;
+  // ...and the strip still redraws once something on it is touched, which is
+  // the path an added clip actually takes.
+  body.commit();
+  out.clip.recommitted = body.root.children.length > 0;
+} catch (error) {
+  out.errors.push(`clip card: ${error.message}`);
+}
+
 // The pre-stage swaps its whole body when the model pill changes, which is the
 // one place a rebuild can leave the node blank.
 try {
@@ -305,6 +339,14 @@ check("the folders tab carries both stored prefixes", settings.get("fields"),
       ["minimax/renders/H3", "minimax/stills/prestage"])
 check("editing a folder writes it back under the server's own key",
       settings.get("posted"), [{"video_prefix": "client/shoot-3/take"}])
+
+# Supplied footage: both renders survive it, and both say it is there.
+clip = report.get("clip", {})
+check("a timeline with a clip in it mounts", clip.get("mounted"), True)
+check("the strip still redraws after a clip is committed", clip.get("recommitted"), True)
+for wanted in ("clip", "take-3.mp4"):
+    if wanted not in (clip.get("modal") or ""):
+        FAILURES.append(f"the timeline modal does not name the clip's {wanted!r}")
 
 check("switching to an image model rebuilds the body",
       report.get("switch", {}).get("image"), "PreStageEditor")
