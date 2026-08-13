@@ -312,6 +312,25 @@ class Timeline {
         text: t(S.takes(asset)),
         onclick: (event) => this.pickPoolTakes(event.currentTarget, asset),
       })] : []),
+      // What the reference is encoded at. The pool's copy is the only place a
+      // shared reference can be set, so without it every citation of it is
+      // stuck on the kind's default — see the editor's own button.
+      ...(S.sizeable(asset) ? [el("button", {
+        class: "mmc-ghost",
+        style: { fontSize: "11px" },
+        title: asset.kind === "video"
+          ? t("match: scale to the generation's pixel area. max: core's 768 reference canvas — "
+            + "more detail, and much the slower of the two. A video's reference tokens are its "
+            + "whole grid once per latent frame, so at full length one clip is about as long as "
+            + "the target video itself, and all of it rides through every sampling step.")
+          : t("match: scale to the generation's pixel area. max: 2048 short edge — better identity, "
+            + "several times slower, because reference tokens ride through every sampling step."),
+        text: t(S.refSize(asset)),
+        onclick: () => {
+          asset.ref_size = S.refSize(asset) === "max" ? "match" : "max";
+          this.commit();
+        },
+      })] : []),
       el("button", {
         class: "mmc-asset-x", text: "✕",
         title: cited.length
