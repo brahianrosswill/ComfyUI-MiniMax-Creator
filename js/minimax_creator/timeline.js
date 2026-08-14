@@ -1631,7 +1631,18 @@ export class TimelineBody {
       && !(piece.soundscape || "").trim()
       && !(piece.music || "").trim()
       && !(piece.assets?.length)
-      && !(piece.loras?.length);
+      && !this.heldLoras().length;
+  }
+
+  /** The piece LoRAs the shot face has no slot for. The turbo entry is not one
+   *  of them: it lives on the piece because turbo is a run-level switch, but
+   *  the shot face wears it in full — the lit turbo pill names the file, the
+   *  quality picker sets its steps, the weights popover picks it. Counting it
+   *  here made throwing turbo on the Creator face flip the node onto the strip
+   *  and hold it there, which read as a face that could not be left. */
+  heldLoras() {
+    const turboFile = this.timeline.turbo?.lora;
+    return (this.timeline.loras ?? []).filter((entry) => entry.name !== turboFile);
   }
 
   /** The editor this body is currently wearing, if it is wearing one. Named to
@@ -2012,7 +2023,7 @@ export class TimelineBody {
           title: t("Open the timeline: the global prompt, the segments, and what happens between them"),
           onclick: () => this.open(),
         }, [icon("sliders", 16), el("span", { text: t("Edit timeline") })]),
-        ...(this.pieceView() ? [this.renderPieceViewPill()] : []),
+        ...(this.pieceView() ? [this.renderPieceViewPill()] : this.renderHeldPieceViewPill()),
         ...(this.preStage ? [this.renderPreStagePill()] : []),
       ]),
     ]);
@@ -2030,6 +2041,45 @@ export class TimelineBody {
       title: t("Showing the whole piece. Click to go back to the shot."),
       onclick: () => view.toggle(),
     }, [icon("timeline", 16), el("span", { text: t("Timeline") })]);
+  }
+
+  /** What a one-shot piece has set that a shot's face has no slot for — the
+   *  fields whose presence keeps this node on the strip. */
+  pieceHolds() {
+    const piece = this.timeline;
+    return [
+      ...((piece.prompt || "").trim() ? [t("the global prompt")] : []),
+      ...((piece.soundscape || "").trim() ? [t("the soundscape")] : []),
+      ...((piece.music || "").trim() ? [t("the music")] : []),
+      ...(piece.assets?.length ? [t("the reference pool")] : []),
+      ...(this.heldLoras().length ? [t("the piece's LoRAs")] : []),
+    ];
+  }
+
+  /**
+   * The same pill, dead, when the piece is one shot but cannot wear its face.
+   *
+   * The rule is the face never hides a field it still queues, so a piece
+   * carrying a global prompt has no shot face to go back to — but a control
+   * that simply vanishes reads as a way back that is broken. Drawn dead
+   * instead, naming exactly what holds the strip open, which is also the
+   * instruction for getting back: empty those fields and the toggle wakes.
+   * A piece of several shots draws nothing — there is no shot to go back to
+   * and nothing a user could empty to make one.
+   */
+  renderHeldPieceViewPill() {
+    const segments = this.timeline.segments;
+    if (!this.face || segments.length !== 1 || S.isClip(segments[0])) return [];
+    const holds = this.pieceHolds();
+    if (!holds.length) return [];
+    return [el("button", {
+      class: "mmc-pill mmc-piece-toggle on",
+      "aria-pressed": "true",
+      disabled: true,
+      title: t("Showing the whole piece. The shot face has no place for {fields}, "
+             + "so the way back opens when they are emptied.",
+             { fields: holds.join(" · ") }),
+    }, [icon("timeline", 16), el("span", { text: t("Timeline") })])];
   }
 
   /**

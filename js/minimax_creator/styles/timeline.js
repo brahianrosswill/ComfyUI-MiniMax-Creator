@@ -352,6 +352,10 @@ export const css = `
   border-color: rgba(240,166,60,.45); color: var(--mmc-accent);
 }
 .mmc-pill.mmc-piece-toggle.on:hover:not(:disabled) { border-color: var(--mmc-accent); }
+/* Held: the strip is showing and cannot be left while the piece carries
+   fields the shot face has no slot for. Still lit — the view it names is the
+   one on screen — but dimmed and dead, with the reason in its tooltip. */
+.mmc-pill.mmc-piece-toggle.on:disabled { opacity: .55; cursor: not-allowed; }
 
 /* --- the stretch after the shot ------------------------------------------- */
 /* Where a piece of one shot grows a second one. The same perforation rail the
