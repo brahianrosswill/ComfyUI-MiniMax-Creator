@@ -370,6 +370,125 @@ export function capturePreStage(state, io) {
   };
 }
 
+// ---- capture from a render --------------------------------------------------
+//
+// The other way a preset is made: not off a node that is set up, but off a file
+// that came out well. Both save nodes embed the workflow that produced the
+// render — the MP4 in its container tags, the PNG in its text chunks — for the
+// reason core's savers do, and that embedded workflow already holds the whole of
+// what a preset is. Nothing had to be stored for this; it was in the files all
+// along, and the only thing missing was a reader.
+//
+// **Off the `prompt` tag, never the `workflow` tag.** Both are there. The
+// workflow is the canvas graph, whose `widgets_values` is a positional array —
+// and this pack has already changed the length of that row once, when the two
+// flow shifts were added. A render made before that has nine entries where the
+// current node declares eleven, so reading it positionally silently assigns
+// `steps` to `shift_video` and everything after it. The `prompt` tag is the API
+// form: `{"2": {"class_type": …, "inputs": {"steps": 20, "cfg": 1.0, …}}}`, keyed
+// by name, which is the same thing `widgetIO` is keyed by. It also survives a
+// render queued over the API, where the workflow tag is a one-node stub.
+
+/** The node ids a render can have come from, and what each calls its blob. */
+export const RENDER_SOURCES = {
+  MiniMaxH3Creator: { scope: "piece", input: "creator_data" },
+  MiniMaxH3Timeline: { scope: "piece", input: "timeline_data" },
+  MiniMaxH3PreStage: { scope: "prestage", input: "prestage_data" },
+};
+
+/** A read-only `widgetIO` over an API prompt's `inputs`. A wired input arrives
+ *  as a `[nodeId, slot]` pair rather than a value, and is no more a sampler
+ *  setting than an empty socket is. */
+function promptIO(inputs) {
+  return {
+    value: (name, fallback) => {
+      const value = inputs?.[name];
+      return value === undefined || Array.isArray(value) ? fallback : value;
+    },
+    set: () => { /* a file is not a node; nothing here is applied back */ },
+  };
+}
+
+/**
+ * Every node in an embedded prompt that a preset could be taken from, in node-id
+ * order, each as `{id, scope, blob, inputs}`.
+ */
+export function renderSources(prompt) {
+  const entries = Object.entries(prompt ?? {});
+  const found = [];
+  for (const [id, node] of entries) {
+    // `hasOwn` and not a bare lookup: a class_type of "constructor" is a string
+    // like any other and would otherwise find something on Object's prototype.
+    const type = node?.class_type;
+    if (typeof type !== "string" || !Object.hasOwn(RENDER_SOURCES, type)) continue;
+    const source = RENDER_SOURCES[type];
+    const blob = node?.inputs?.[source.input];
+    if (typeof blob !== "string") continue;
+    found.push({ id, scope: source.scope, blob, inputs: node.inputs });
+  }
+  return found.sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+}
+
+/**
+ * One render, as a preset ready to be saved: `{scope, data, cover, defaultName}`
+ * in the shape `savePreset` takes and a `presetTarget`'s `capture()` returns, so
+ * the two ways of making a preset end in exactly the same call.
+ *
+ * `asset` is the picker's own row for the file — `{path, kind, mtime, name}` —
+ * which is already the shape a cover is stored in. The cover comes free and it
+ * comes right: the render this was taken from *is* the picture of what this
+ * setup produces, which is the one thing a cover is for.
+ *
+ * **Which node, when a workflow holds several.** The render's kind decides
+ * first, and it decides most of it: an MP4 came from a piece and a PNG from a
+ * pre-stage, so a graph pairing a PreStage with a Creator — the ordinary way
+ * these two nodes are used — is never ambiguous at all. Two Creators in one
+ * graph is, and there the lowest node id wins and the caller is told, because
+ * the tags carry nothing that says which of them wrote this file. Guessing
+ * quietly would be the worse half of that.
+ */
+export function captureFromRender(meta, asset) {
+  const sources = renderSources(meta?.prompt);
+  if (!sources.length) {
+    throw new Error(meta?.prompt || meta?.workflow
+      ? t("That render was not made by these nodes.")
+      : t("That render carries no workflow — it was saved with metadata disabled, or written by something else."));
+  }
+  const wanted = asset?.kind === "image" ? "prestage" : "piece";
+  const matching = sources.filter((source) => source.scope === wanted);
+  if (!matching.length) {
+    throw new Error(t("That render's workflow holds no node that could have made a {kind}.",
+                      { kind: t(asset?.kind === "image" ? "image" : "video") }));
+  }
+  const source = matching[0];
+
+  let data;
+  if (source.scope === "prestage") {
+    data = capturePreStage(S.parsePreStage(source.blob), promptIO(source.inputs));
+  } else {
+    // Through the same normalise-then-serialise path a live node's capture goes
+    // through, rather than treating the stored blob as already canonical: the
+    // file may have been written by an older build, and `parseTimeline` ->
+    // `syncTimeline` is what decides what this one means by it.
+    const timeline = S.parseTimeline(source.blob);
+    S.syncTimeline(timeline);
+    data = capturePiece(timeline, promptIO(source.inputs));
+  }
+
+  const stem = String(asset?.name ?? asset?.path ?? "").split("/").pop()
+    .replace(/\.[^.]+$/, "").replace(/_+$/, "");
+  return {
+    scope: source.scope,
+    data,
+    cover: asset?.path ? { path: asset.path, kind: asset.kind, mtime: asset.mtime } : null,
+    defaultName: stem || t("Untitled preset"),
+    // What the caller warns about. Not an error: the preset it made is a real
+    // preset off a real node, it may simply be off the other one.
+    ambiguous: matching.length > 1 ? matching.length : 0,
+    node: source.id,
+  };
+}
+
 // ---- what the card draws ----------------------------------------------------
 
 /** The picture behind one block of the lane, first hit wins:

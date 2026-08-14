@@ -450,6 +450,173 @@ try {
   out.errors.push(`cover: ${error.stack}`);
 }
 
+// ---- a preset taken from a render -------------------------------------------
+//
+// The fixture is a real render's `prompt` tag, off an H3_000NN_.mp4 queued
+// through the API, with only the prompt text shortened. Two things about it are
+// the point rather than incidental detail:
+//
+//   * its blob is a **version 1** lone-shot `creator_data` — the shape a Creator
+//     wrote before pieces had strips — so `asPiece` has to promote it;
+//   * its inputs carry **no `shift_video`/`shift_audio`**, because the render
+//     predates those two widgets. That is exactly the case that makes reading
+//     the `workflow` tag's positional `widgets_values` wrong: nine values where
+//     the node now declares eleven, and everything after the gap lands one slot
+//     out. Read by name, an absent widget is simply absent.
+
+const RENDER_BLOB = JSON.stringify({
+  version: 1,
+  prompt: "subject_definitions:\n<Subject 1> is the chapel interior in @img-1.\n",
+  assets: [
+    { handle: "img-1", kind: "image", role: "reference", filename: "IMG_3006.jpeg",
+      ref_size: "max", takes: "scene" },
+    { handle: "img-2", kind: "image", role: "reference", filename: "IMG_3059.jpeg",
+      ref_size: "max", takes: "person" },
+  ],
+  loras: [],
+  duration_s: 15,
+  aspect: "3:4",
+  short_edge: 512,
+  models: {
+    ref2va: "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    clip: "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    vae: "minimax_h3_video_vae_fp16.safetensors",
+    audio_vae: "minimax_h3_audio_vae_fp32.safetensors",
+    preview: "taeh3.safetensors",
+  },
+});
+
+const RENDER_META = {
+  workflow: { nodes: [] },
+  prompt: {
+    "2": {
+      class_type: "MiniMaxH3Creator",
+      _meta: { title: "MiniMax H3 Creator" },
+      inputs: {
+        creator_data: RENDER_BLOB,
+        seed: 459812802937181,
+        steps: 20, cfg: 1.0, sampler_name: "res_multistep", scheduler: "simple",
+        block_cache: "off", spectrum: false, spectrum_blend: 0.5,
+      },
+    },
+  },
+};
+
+const RENDER_ASSET = {
+  path: "minimax/renders/H3_00028_.mp4 [output]",
+  name: "H3_00028_.mp4", kind: "video", mtime: 1755100000,
+};
+
+try {
+  const taken = P.captureFromRender(RENDER_META, RENDER_ASSET);
+  const row = taken.data.speed?.row ?? {};
+  out.fromRender = {
+    scope: taken.scope,
+    // The name is the render's, because that is what you recognise it by.
+    name: taken.defaultName,
+    // The cover comes free and comes right: the render it was taken from is by
+    // definition the picture of what this setup produces.
+    cover: taken.cover,
+    aspect: taken.data.look?.aspect,
+    shortEdge: taken.data.look?.short_edge,
+    route: taken.data.weights?.ref2va,
+    // The v1 blob promoted: one card, at the length the lone shot ran — and its
+    // writing and its references are the *card's*, not the piece's, because on a
+    // lone generation that is whose they were. `asPiece` decides this, and the
+    // preset takes its word for it rather than having a second opinion.
+    shots: taken.data.strip?.segments?.length,
+    seconds: taken.data.strip?.segments?.[0]?.duration_s,
+    pool: (taken.data.refs ?? []).map((ref) => ref.handle),
+    cardRefs: (taken.data.strip?.segments?.[0]?.assets ?? []).map((ref) => ref.handle),
+    pieceText: (taken.data.prompt?.prompt ?? "").length,
+    cardCites: (taken.data.strip?.segments?.[0]?.prompt ?? "").includes("@img-1"),
+    steps: row.steps,
+    sampler: row.sampler_name,
+    // Absent in the file and therefore absent here — not the next value along.
+    shiftVideo: "shift_video" in row,
+    // The one field a preset never carries, and it was right there in the tag.
+    seed: "seed" in row,
+  };
+
+  // And the whole point: what came out of the file goes onto a node and is the
+  // piece the file was rendered from.
+  const target = S.parseTimeline(JSON.stringify({
+    version: 2, prompt: "nothing in common", aspect: "1:1", models: {},
+    segments: [{ prompt: "not this either", assets: [], loras: [], duration_s: 6 }],
+  }));
+  const targetIO = fakeIO({ steps: 4, cfg: 9, seed: 99 });
+  P.applyToPiece(taken.data, Object.keys(taken.data), target, targetIO);
+  S.syncTimeline(target);
+  const want = S.parseTimeline(RENDER_BLOB);
+  S.syncTimeline(want);
+  out.fromRender.blob = S.serializeTimeline(target) === S.serializeTimeline(want);
+  if (!out.fromRender.blob) {
+    out.fromRender.got = JSON.parse(S.serializeTimeline(target));
+    out.fromRender.want = JSON.parse(S.serializeTimeline(want));
+  }
+  out.fromRender.rowLanded = targetIO.values.steps === 20
+                          && targetIO.values.sampler_name === "res_multistep";
+  out.fromRender.seedUntouched = targetIO.values.seed === 99;
+} catch (error) {
+  out.errors.push(`fromRender: ${error.stack}`);
+}
+
+// Which node, when a workflow holds more than one that could have made it.
+try {
+  const creator = RENDER_META.prompt["2"];
+  const prestage = {
+    class_type: "MiniMaxH3PreStage",
+    inputs: {
+      prestage_data: JSON.stringify({ version: 1, arch: "krea2", prompt: "a plate",
+                                      aspect: "3:4", short_edge: 512, refs: [] }),
+      seed: 7, steps: 28, cfg: 3.5, sampler_name: "euler", scheduler: "simple",
+    },
+  };
+  // The ordinary pairing: a PreStage feeding a Creator. The render's own kind
+  // settles it — a clip cannot have come from the still node — so this is not
+  // ambiguous at all.
+  const paired = { prompt: { "2": creator, "5": prestage } };
+  const clip = P.captureFromRender(paired, RENDER_ASSET);
+  const still = P.captureFromRender(paired, {
+    path: "minimax/stills/prestage_00003_.png [output]",
+    name: "prestage_00003_.png", kind: "image", mtime: 1755100001,
+  });
+
+  // Two of the same node is the case nothing in the file can settle.
+  const twins = { prompt: { "9": creator, "4": creator } };
+  const picked = P.captureFromRender(twins, RENDER_ASSET);
+
+  out.whichNode = {
+    clipScope: clip.scope, clipAmbiguous: clip.ambiguous,
+    stillScope: still.scope, stillArch: still.data.weights?.arch,
+    stillCover: still.cover?.kind,
+    twinsAmbiguous: picked.ambiguous,
+    // Lowest id, so the same file always gives the same preset.
+    twinsNode: picked.node,
+  };
+} catch (error) {
+  out.errors.push(`whichNode: ${error.stack}`);
+}
+
+// A render this cannot be taken from says which of the two reasons it is.
+try {
+  const reasons = {};
+  const attempt = (key, meta, asset) => {
+    try { P.captureFromRender(meta, asset ?? RENDER_ASSET); reasons[key] = null; }
+    catch (error) { reasons[key] = error.message; }
+  };
+  attempt("bare", { prompt: null, workflow: null });
+  attempt("foreign", { prompt: { "1": { class_type: "KSampler", inputs: { seed: 1 } } } });
+  // A still whose workflow holds only a piece node: the file cannot have come
+  // from it, and saying "no node" would be a lie about a workflow that has one.
+  attempt("wrongKind", RENDER_META, { path: "x.png [output]", name: "x.png", kind: "image" });
+  out.renderRefusals = reasons;
+  out.everyRenderRefusalExplained = Object.values(reasons)
+    .every((why) => typeof why === "string" && why.length > 24);
+} catch (error) {
+  out.errors.push(`renderRefusals: ${error.stack}`);
+}
+
 // ---- storage ----------------------------------------------------------------
 
 try {
@@ -624,6 +791,61 @@ check("a pre-stage still is marked an image, which /view can serve",
       (report.get("coverStill") or {}).get("kind"), "image")
 check("...and nothing becomes no cover", report.get("coverEmpty"), None)
 check("...as does a stage that has run but saved nothing", report.get("coverNoResult"), None)
+
+# ---- a preset taken from a render -------------------------------------------
+
+taken = report.get("fromRender", {})
+check("a render's embedded workflow is a piece preset", taken.get("scope"), "piece")
+check("...named after the render, which is what you recognise it by",
+      taken.get("name"), "H3_00028")
+check("...carrying the render itself as its cover", taken.get("cover"), {
+    "path": "minimax/renders/H3_00028_.mp4 [output]", "kind": "video", "mtime": 1755100000})
+check("...its canvas", taken.get("aspect"), "3:4")
+check("...at its short edge", taken.get("shortEdge"), 512)
+check("...the checkpoint it was routed through",
+      taken.get("route"), "minimax_h3_ref2va_pruned_int8_convrot.safetensors")
+# The blob in this file is a version-1 lone shot, from before pieces had strips.
+check("a v1 blob is promoted to a piece of one card", taken.get("shots"), 1)
+check("...at the length that shot ran", taken.get("seconds"), 15)
+check("...whose references are the card's, as they were on a lone generation",
+      taken.get("cardRefs"), ["img-1", "img-2"])
+check("...so the piece's pool is empty rather than holding a copy",
+      taken.get("pool"), [])
+check("...and the writing is the card's too", taken.get("pieceText"), 0)
+check("...still citing the handles it cited", taken.get("cardCites"), True)
+check("the sampler row comes off the tag by name", taken.get("steps"), 20)
+check("...all of it", taken.get("sampler"), "res_multistep")
+# The trap that decides which tag is read: this render predates the two flow
+# shifts, so its row is two entries short of what the node declares now.
+check("a widget the render predates is absent, not the next value along",
+      taken.get("shiftVideo"), False)
+check("and the seed is not carried, though the tag has one", taken.get("seed"), False)
+
+if not taken.get("blob"):
+    FAILURES.append("a preset taken from a render does not put its piece back:\n"
+                    f"    want {json.dumps(taken.get('want'), sort_keys=True)[:400]}\n"
+                    f"    got  {json.dumps(taken.get('got'), sort_keys=True)[:400]}")
+check("...and the row lands with it", taken.get("rowLanded"), True)
+check("...leaving the target's seed alone", taken.get("seedUntouched"), True)
+
+which = report.get("whichNode", {})
+check("a clip in a PreStage→Creator graph comes off the piece node",
+      which.get("clipScope"), "piece")
+check("...with nothing to disambiguate", which.get("clipAmbiguous"), 0)
+check("and a still off the pre-stage node", which.get("stillScope"), "prestage")
+check("...with its architecture", which.get("stillArch"), "krea2")
+check("...covered by the still, served by /view", which.get("stillCover"), "image")
+check("two nodes of one kind cannot be told apart, and the caller is told so",
+      which.get("twinsAmbiguous"), 2)
+check("...settled by the lowest id, so one file always gives one preset",
+      which.get("twinsNode"), "4")
+
+render_refusals = report.get("renderRefusals", {})
+for key in ("bare", "foreign", "wrongKind"):
+    if render_refusals.get(key) is None:
+        FAILURES.append(f"a render that is {key} should not yield a preset")
+check("every refusal says which of the reasons it is",
+      report.get("everyRenderRefusalExplained"), True)
 
 # ---- storage ----------------------------------------------------------------
 

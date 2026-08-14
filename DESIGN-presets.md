@@ -388,6 +388,86 @@ this machine does not have applies anyway and the affected chips render as
 missing — which is exactly what a saved workflow from another machine already
 does, and the same message says it.
 
+## Taken from a render
+
+Saving the current setup assumes the setup is still on a node. By the time you
+know which render was the good one, you have usually moved on — three prompts
+later, a different LoRA, the strip rebuilt. The setup is not gone, though: **both
+save nodes embed the workflow that made the file**, the MP4 in its container tags
+and the PNG in its text chunks, for the same reason core's savers do. So the
+second way to make a preset is to point at a render and say *that one*.
+
+Nothing is stored for this. It was in the files all along.
+
+### The `prompt` tag, not the `workflow` tag
+
+Both are written and they are not equally useful.
+
+`workflow` is the canvas graph, and a node's settings are in it as
+`widgets_values` — a **positional** array. This pack has already changed the
+length of that row once, when the two flow shifts were added, so a render from
+before that carries nine entries where the node now declares eleven and every
+value after the gap lands one slot out: `steps` read as `shift_video`, silently,
+with no error anywhere. It is also a stub for anything queued over the API, where
+the graph is synthesised from the request and holds one node and no links.
+
+`prompt` is the API form — `{"2": {"class_type": …, "inputs": {"steps": 20,
+"cfg": 1.0, …}}}` — **keyed by name**, which is what `widgetIO` is keyed by too.
+A widget the render predates is simply absent rather than shifting its
+neighbours. That is the tag this reads, and the other is not consulted.
+
+Which makes the capture side almost nothing: a read-only `widgetIO` over
+`inputs`, the blob through `parseTimeline` → `syncTimeline`, and then
+`capturePiece` exactly as a live node's capture calls it. A render whose blob is
+a version-1 lone shot — the shape a Creator wrote before pieces had strips — is
+promoted by `asPiece` on the way through, so an old render gives an ordinary
+one-card piece with its writing and its references on the card, where they were.
+
+`seed` is in the tag, plainly, and is not carried. The rule does not bend for
+having the number to hand.
+
+### The route this needed
+
+One, and it is the only Python in the feature: `/minimax_creator/render_meta`
+opens the file and hands back the two tags parsed. The browser cannot read either
+— an MP4's container tags are not reachable from JS at all, and no client-side
+box parser is worth shipping for this. Two readers behind it, chosen by
+extension rather than by trying one and catching, because `av` cannot see a PNG's
+text chunks and PIL cannot open an MP4: a fallback chain would only turn "the
+wrong reader" into "no metadata", which is the answer for a file that genuinely
+has none.
+
+This does not weaken the argument for keeping the rest of the feature off the
+server. `settings.py` is a route because the save node reads it *while a prompt
+executes*; this reads a file a finished execution already wrote, and a preset's
+whole life is still over before the queue button is pressed.
+
+A file with no tags is not an error. It comes back `{prompt: null, workflow:
+null}` with a 200 — saved under `--disable-metadata`, or written by something
+else entirely — and the library says which of those it is.
+
+### Which node, when a workflow holds more than one
+
+The render's own kind settles most of it: an MP4 came from a piece node and a PNG
+from a pre-stage, so the ordinary PreStage → Creator pairing is never ambiguous.
+Two Creators in one graph is, and nothing in either tag says which of them wrote
+this file. The lowest node id wins, so one file always gives the same preset —
+**and the library says so after saving**, rather than choosing quietly. The
+preset is real either way; it may simply be off the other one.
+
+### The cover comes free, and comes right
+
+The render you picked is the cover. That is not a convenience, it is the
+definition the cover section already argues for: the picture of what this setup
+produces. The picker's row is `{path, kind, mtime}`, which is the shape a cover
+is stored in, so it is copied field for field and no adapter exists.
+
+The button sits beside *Save current setup* and, unlike it, is **not conditional
+on a target** — it reads a file, not a node, so it works in the read-only library
+the context menu opens, and on a machine whose renders came from somewhere else.
+It opens `openPicker({kinds: ["renders"]})`, the same window *Set cover…* opens.
+There is no new window in this and nothing new to learn.
+
 ## Where it hangs off the existing UI
 
 - **`renderRail()`** on the timeline body and on the pre-stage body gains a
@@ -430,11 +510,14 @@ the same remount the pill does.
 | `js/minimax_creator/editor.js` | the `presetTarget` option and its rail tool |
 | `js/minimax_creator.js` | the context-menu item |
 | `js/minimax_creator/styles.js` | the new chunk, after the picker's |
-| `js/minimax_creator/locales/{ja,ko,zh}.js` | 74 new strings, in all three |
+| `js/minimax_creator/api.js` | `renderMeta`, the one call to the one route |
+| `server_routes.py` | `/minimax_creator/render_meta` and its two readers |
+| `js/minimax_creator/locales/{ja,ko,zh}.js` | 81 new strings, in all three |
 
-No Python. Nothing here is read at execute time, nothing here changes what is
-queued, and the backend has no opinion about a preset that it does not already
-have about the blob the preset restores.
+One route of Python, and only because a browser cannot open a file. Nothing here
+is read at execute time, nothing here changes what is queued, and the backend has
+no opinion about a preset that it does not already have about the blob the preset
+restores.
 
 ## Tests
 
@@ -471,9 +554,17 @@ minus the DOM — nothing in it renders anything.
 - **Storage and starters.** Save, list, read back, star, delete; and every shipped
   starter describes itself, holds only sections its scope can take, and names no
   file.
+- **From a render.** The fixture is a real render's `prompt` tag, shortened only
+  in its prompt text, and it is the awkward case on purpose: a version-1 lone-shot
+  blob, and a row from before the flow shifts existed. It has to come back as the
+  piece it was rendered from, with the shifts *absent* rather than shifted — which
+  is the whole of why the `prompt` tag is read and not the `workflow` tag — and
+  with the seed left where the target had it, though the tag carries one. Then
+  which node wins in a paired graph, that two of a kind are reported rather than
+  guessed, and that each of the three refusals says which reason it is.
 
 There is no Python mirror to keep in step, which is the one nice thing about a
-feature that lives entirely on the near side of the queue.
+feature that lives almost entirely on the near side of the queue.
 
 ## What building it changed
 

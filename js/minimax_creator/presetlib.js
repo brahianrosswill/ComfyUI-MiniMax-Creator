@@ -20,7 +20,7 @@
 
 import { el, icon, mountOverlay } from "./dom.js";
 import { t } from "./i18n.js";
-import { stillUrl } from "./api.js";
+import { renderMeta, stillUrl } from "./api.js";
 import { openPicker } from "./picker.js";
 import { BUILTIN } from "./presets/builtin.js";
 import * as P from "./presets.js";
@@ -101,6 +101,15 @@ class PresetLibrary {
           title: t("Read a .json of presets exported from another machine"),
           onclick: () => this.importFile(),
         }, [icon("folder", 14), el("span", { text: t("Import") })]),
+        // Not conditional on a target, unlike the button beside it: this reads a
+        // file rather than a node, so it works in the read-only library the
+        // context menu opens — and on a machine whose renders came from
+        // somewhere else entirely.
+        el("button", {
+          class: "mmc-organize",
+          title: t("Take a preset from the workflow embedded in a finished render"),
+          onclick: () => this.saveFromRender(),
+        }, [icon("gallery", 14), el("span", { text: t("From a render") })]),
         // Absent rather than disabled where there is nothing to save: the
         // library opened from a context menu has no node behind it.
         ...(this.target ? [el("button", {
@@ -603,18 +612,58 @@ class PresetLibrary {
    * of seam a library is supposed to hide.
    */
   async saveCurrent() {
-    const captured = this.target.capture();
+    return this.commit(this.target.capture(), this.target.scope);
+  }
+
+  /**
+   * Take a preset from a finished render instead of from a node.
+   *
+   * The other half of "a preset is a setup you can put back": the first half
+   * assumes the setup is still on a node, and by the time you know a render was
+   * the good one you have usually moved on. Both save nodes embed the workflow
+   * that made the file, so the setup was never actually lost — it was in the
+   * render, and this is the reader.
+   *
+   * The gallery is the picker, exactly as *Set cover…* opens it. There is no new
+   * window here and nothing to learn: pick the render you liked, and its setup is
+   * in the library with that render already on the card.
+   */
+  async saveFromRender() {
+    const chosen = await openPicker({
+      kinds: ["renders"],
+      kind: "renders",
+      capacity: () => ({ used: 0, max: 1, filesLeft: 1 }),
+    });
+    if (!chosen?.length) return;
+    const asset = chosen[0];
+    try {
+      const captured = P.captureFromRender(await renderMeta(asset.path), asset);
+      const saved = await this.commit(captured, captured.scope);
+      // Said after the save rather than instead of it: the preset is a real one
+      // off a real node, it may simply be off the other one of two.
+      if (saved && captured.ambiguous) {
+        this.say(t("That workflow holds {count} nodes this could have come from — this is node {node}.",
+                   { count: captured.ambiguous, node: captured.node }));
+      }
+    } catch (error) {
+      this.say(error.message);
+    }
+  }
+
+  /** Store one capture, show it, and put the caret in its name. Both save verbs
+   *  end here, so a preset made either way is the same preset. */
+  async commit(captured, scope) {
     try {
       const row = await P.savePreset({
         name: captured.defaultName || t("Untitled preset"),
-        scope: this.target.scope,
+        scope,
         data: captured.data,
         cover: captured.cover ?? null,
       });
       this.rows = [row, ...this.rows];
       this.scope = row.scope;
-      for (const [index, scope] of P.SCOPES.entries()) {
-        this.tabs[index].setAttribute("aria-selected", String(scope === this.scope));
+      for (const [index, tab] of P.SCOPES.entries()) {
+        this.tabs[index].setAttribute("aria-selected", String(tab === this.scope));
       }
       this.say(null);
       this.renderShelves();
@@ -624,8 +673,10 @@ class PresetLibrary {
       const field = this.inspector.querySelector?.(".mmc-preset-insp-name");
       field?.focus();
       field?.select?.();
+      return row;
     } catch (error) {
       this.say(error.message);
+      return null;
     }
   }
 
