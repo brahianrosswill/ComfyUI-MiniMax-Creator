@@ -32,12 +32,7 @@ def _load():
 
 canvas, compiler, still = _load()
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def expect_error(label, fn, fragment):
@@ -1541,9 +1536,4 @@ for label, blob in [
     old, new = derived_and_pinned(blob)
     check(f"the stamped canvas is the derived one — {label}", new, old)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all contract tests passed")
+passed("all contract tests passed")

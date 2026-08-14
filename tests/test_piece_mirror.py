@@ -123,12 +123,7 @@ if proc.returncode != 0:
     sys.exit(1)
 mirror = json.loads(proc.stdout)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 check("the piece fields match", mirror["fields"], list(compiler.PIECE_FIELDS))
@@ -205,9 +200,4 @@ check("an old creator's segment list is its one shot",
 check("...and its keyframe is not read as a reference pool",
       compiler.timeline_pool(CASES["a written creator"]), [])
 
-if FAILURES:
-    print(f"{len(FAILURES)} mismatch(es):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"state.js mirrors compile.py across {len(CASES)} blobs; v1 lifts to one shot")
+passed(f"state.js mirrors compile.py across {len(CASES)} blobs; v1 lifts to one shot")

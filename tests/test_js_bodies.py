@@ -818,12 +818,7 @@ if result.returncode != 0:
     sys.exit(1)
 
 report = json.loads(result.stdout.strip().splitlines()[-1])
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 FAILURES.extend(report["errors"])
@@ -997,9 +992,4 @@ check("the prompt survives the round trip",
 check("the rebuilt body is not empty",
       report.get("switch", {}).get("rendered"), True)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"the frontend loads and all {len(report['nodes'])} bodies mount")
+passed(f"the frontend loads and all {len(report['nodes'])} bodies mount")

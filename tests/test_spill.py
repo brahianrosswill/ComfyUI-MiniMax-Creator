@@ -50,14 +50,9 @@ except Exception as exc:  # noqa: BLE001
 WHERE = tempfile.mkdtemp(prefix="mmc-spill-")
 spill.directory = lambda: WHERE
 
-FAILURES = []
+from harness import FAILURES, check, passed
 FPS = 24
 RATE = 48000
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
 
 
 def expect_error(label, fn, fragment):
@@ -168,9 +163,4 @@ check("the reader is a memmap, not a read",
 check("...and a seam off it costs the seam's width",
       tuple(spill.frames(long_pass, 2).shape), (2, 6, 8, 3))
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all spill tests passed — passes written and read back")
+passed("all spill tests passed — passes written and read back")

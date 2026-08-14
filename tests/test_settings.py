@@ -35,12 +35,7 @@ for name in ("outputs", "settings"):
     spec.loader.exec_module(module)
 settings = sys.modules["mmcpkg.settings"]
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 def refuses(label, raw, fragment):
@@ -130,10 +125,3 @@ with tempfile.TemporaryDirectory() as directory:
 # existed: turning the page on must not change anybody's files.
 check("the default is what the encoder would have picked anyway",
       settings.DEFAULT_CRF, 23)
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all settings tests passed")

@@ -102,7 +102,7 @@ if result.returncode != 0:
     sys.exit(1)
 mirror = json.loads(result.stdout)
 
-FAILURES = []
+from harness import FAILURES, passed
 
 
 def check(label, got, want):
@@ -137,9 +137,4 @@ for (render, flags, feathers), seen in zip(CASES, mirror):
     # everything that reads the old key keeps working.
     check(f"{name}: render", seen["render"], compiler.render_mode(data))
 
-if FAILURES:
-    print(f"{len(FAILURES)} disagreement(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"state.js mirrors compile.py across {len(CASES)} strips")
+passed(f"state.js mirrors compile.py across {len(CASES)} strips")

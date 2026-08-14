@@ -69,12 +69,7 @@ def _load():
 routes = _load()
 compiler = sys.modules["mmc.compile"]
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def strip(flags, render="chained", **extra):
@@ -223,9 +218,4 @@ check("a piece of several already has them",
       len(compiler.timeline_segments(strip([False, True, True]))), 3)
 
 
-if FAILURES:
-    print(f"FAILED ({len(FAILURES)})")
-    for line in FAILURES:
-        print(f"  - {line}")
-    sys.exit(1)
-print("ok")
+passed("ok")

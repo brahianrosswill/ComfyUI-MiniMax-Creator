@@ -61,12 +61,7 @@ tl = importlib.import_module(f"{PACKAGE}.timeline")
 outputs_mod = importlib.import_module(f"{PACKAGE}.outputs")
 settings_mod = importlib.import_module(f"{PACKAGE}.settings")
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 def expect_error(label, fn, fragment):
@@ -780,10 +775,3 @@ direct_kinds = by_class(build(data=json.dumps(
 check("direct past native is the old one-pass graph",
       ("MiniMaxH3RefinePass" in direct_kinds, len(direct_kinds["MiniMaxH3TimelineSegment"])),
       (False, 1))
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all creator graph tests passed")

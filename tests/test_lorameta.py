@@ -30,12 +30,7 @@ spec = importlib.util.spec_from_file_location("lorameta", os.path.join(ROOT, "lo
 lorameta = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lorameta)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 # ---- fixtures ---------------------------------------------------------------
@@ -409,11 +404,3 @@ with tempfile.TemporaryDirectory() as directory:
           isinstance(sheet["header"].get("metadata"), dict), True)
     check("the sheet holds no bytes and no paths",
           set(sheet["showcase"][0]), {"index", "kind", "thumb", "meta", "nsfw"})
-
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all lorameta tests passed")

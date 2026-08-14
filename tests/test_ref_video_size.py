@@ -50,12 +50,7 @@ except Exception as exc:  # noqa: BLE001
     print(f"skipped: ComfyUI not importable ({type(exc).__name__}: {exc})")
     sys.exit(0)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 # Source clips across the shapes people actually attach, plus a couple of
@@ -138,9 +133,4 @@ for gen in [(864, 480), (1024, 576), (1376, 768)]:
     print(f"  6 s 1080p reference @ generation {gen[0]}x{gen[1]}: "
           f"max {at_max:,} rows -> match {at_match:,} rows ({at_max / at_match:.1f}x)")
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for line in FAILURES[:20]:
-        print(f"  - {line}")
-    sys.exit(1)
-print("all reference-video size tests passed")
+passed("all reference-video size tests passed")
