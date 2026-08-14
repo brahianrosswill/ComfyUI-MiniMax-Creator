@@ -603,20 +603,12 @@ class Timeline {
       if (position > 0) parts.push(this.renderJoin(pass.start));
       parts.push(this.renderPass(pass));
     });
-    // Nothing on the strip is not an error state, it is leader: the unexposed
-    // stretch at the head of a reel, waiting to be shot. So an empty timeline
-    // gets the whole width and says what the two ways to begin are, rather than
-    // a grey sentence next to two small tiles — and the small tiles come back
-    // the moment there is a card for them to sit after.
-    if (!passes.length) {
-      // The strip is a grid of min-content columns, which is right for cards
-      // and wrong for the one panel that stands in for all of them.
-      this.stripHost.classList.toggle("has-pass", false);
-      this.stripHost.classList.toggle("leader", true);
-      this.stripHost.replaceChildren(this.renderLeader());
-      return;
-    }
-    this.stripHost.classList.toggle("leader", false);
+    // No empty case: `syncTimeline` keeps a piece at one shot or more, so the
+    // strip always has a card to draw. What used to be here was the leader —
+    // the unexposed head of a reel, with the two ways to begin on it — and it
+    // went when the last card stopped being deletable down to nothing. The two
+    // ways are still both offered, on the add tile beside the card, which is
+    // where they were every other time.
     const what = S.isSingle(this.timeline) ? "Shot" : "Segment";
     // The refusal is the tooltip when there is one: the button says why it is
     // dead rather than leaving the user to find out at queue time.
@@ -644,44 +636,6 @@ class Timeline {
     this.stripHost.classList.toggle(
       "has-pass", passes.some((pass) => pass.segments.length > 1));
     this.stripHost.replaceChildren(...parts);
-  }
-
-  /**
-   * The head of an unshot reel: what a timeline looks like before it has one.
-   *
-   * Two ways to fill a stretch of a piece, side by side and equally weighted,
-   * because neither is the default — that is the whole reason there is no card
-   * here to begin with. Each says what it is in the terms the strip uses
-   * everywhere else: a segment is written and generated, a clip already exists
-   * and is played.
-   */
-  renderLeader() {
-    const refusal = S.addSegmentRefusal(this.timeline);
-    const choice = (glyph, label, line, onclick) => el("button", {
-      class: "mmc-tl-start",
-      disabled: refusal ? true : undefined,
-      title: refusal ?? undefined,
-      onclick,
-    }, [
-      el("span", { class: "mmc-tl-start-icon" }, [icon(glyph, 20)]),
-      el("span", { class: "mmc-tl-start-text" }, [
-        el("span", { class: "mmc-tl-start-name", text: label }),
-        el("span", { class: "mmc-tl-start-line", text: line }),
-      ]),
-    ]);
-
-    return el("div", { class: "mmc-tl-leader" }, [
-      el("div", { class: "mmc-tl-leader-head" }, [
-        el("span", { class: "mmc-tl-leader-mark", text: t("no frames yet") }),
-        el("span", { class: "mmc-tl-leader-line", text: t("A piece starts either way — written, or brought.") }),
-      ]),
-      el("div", { class: "mmc-tl-leader-choices" }, [
-        choice("pen", t("Write a segment"),
-               t("A shot the model generates from your prompt."), () => this.add()),
-        choice("video", t("Cut in a clip"),
-               t("Footage you already have, played as it is."), () => this.addClip()),
-      ]),
-    ]);
   }
 
   /**
@@ -1723,10 +1677,11 @@ export class TimelineBody {
   /**
    * Unexposed film: the stretch after the shot, where the next one goes.
    *
-   * The leader is the unexposed head of a reel and this package already draws it
-   * — `.mmc-tl-empty` is a perforation rail with a sentence on it, for a strip
-   * with nothing on it yet. This is the same rail one card later, and it means
-   * the same thing: film that has not been shot.
+   * The leader is the unexposed head of a reel, and this is the same idea one
+   * card later: a perforation rail across the body, meaning film that has not
+   * been shot. The strip used to draw a leader of its own for a piece with
+   * nothing on it; a piece cannot be empty any more, so this is the only place
+   * the rail is left — and the only place it was ever really needed.
    *
    * Quiet on purpose. Most renders are one shot, and a control that announced
    * itself would be wrong nine times out of ten. It is the only thing between
@@ -1956,15 +1911,10 @@ export class TimelineBody {
       // real relative lengths, so a 10-second shot is visibly twice a 5. Merged
       // shots close ranks under one outline — the same reading as the modal's
       // casing, at a tenth the size.
-      // Nothing to draw the strip from until there is a card on it. Said here
-      // rather than left as an empty band, because an empty band reads as a
-      // render that produced nothing rather than as a piece not yet written.
-      ...(segments.length ? [this.renderLane(passes)] : [el("div", {
-        class: "mmc-tl-empty",
-        title: t("Open the timeline: the global prompt, the segments, and what happens between them"),
-        text: t("Nothing on the strip yet — open the timeline to write a shot or cut in a clip."),
-        onclick: () => this.open(),
-      })]),
+      // Always a lane: `syncTimeline` keeps a piece at one shot or more, and a
+      // piece of one wears that shot's editor rather than this summary — so by
+      // the time anything gets here there are at least two cards to draw.
+      this.renderLane(passes),
       el("div", { class: "mmc-pills" }, [
         // The render mode leads, because it is the one thing about this node
         // that changes what all the other numbers mean.
@@ -1978,8 +1928,7 @@ export class TimelineBody {
                 + "shots generates them at once, with the cuts written into its description."),
         }, [
           icon("timeline", 16),
-          el("span", { text: !segments.length ? t("empty")
-            : single ? t("one pass")
+          el("span", { text: single ? t("one pass")
               : passes.length === segments.length ? t("chained")
                 : t("{count} passes", { count: passes.length }) }),
           el("span", {

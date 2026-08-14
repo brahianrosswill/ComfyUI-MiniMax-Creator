@@ -762,14 +762,19 @@ export function emptyTimeline() {
     // The turbo switch. Global like the LoRA it engages: a speed-up belongs to
     // the run, not to shot 3.
     turbo: emptyTurbo(),
-    // Empty, and it is the point: a new timeline is a strip with nothing on it
-    // and two ways to start it. An opening card would have to be a shot — there
-    // is nothing else a default could be — and that card was undeletable while
-    // it was the only one, so every piece began with a generation whether or
-    // not it was meant to. `compile.timeline_segments` refuses an empty strip
-    // at queue time, which is the right moment: an empty strip is a piece being
-    // written, not a piece that is wrong.
-    segments: [],
+    // One blank shot, because that is what this node is when you drop it. It
+    // was empty while the strip was a node of its own: a new timeline was a
+    // reel with nothing on it and two equally good ways to begin, and an
+    // opening card would have had to be a shot when a clip was just as likely.
+    //
+    // The merge answers that question for it. A piece of one shot *is* the
+    // Creator — you drop this node to write a video — so the shot is the
+    // default and the clip is the other thing you can do to a strip that
+    // exists. Which also retires the state the old reasoning was protecting
+    // against: the card is not undeletable, it is only unemptyable, and
+    // clearing the last one leaves a blank shot rather than a piece with
+    // nothing in it and a face that can only say so. See `syncCanvas`.
+    segments: [emptySegment()],
   };
 }
 
@@ -779,6 +784,18 @@ export function emptyTimeline() {
  * Stripped again by `serializeTimeline` — the segments do not own it.
  */
 function syncCanvas(timeline) {
+  // A piece is at least one shot, so deleting the last card clears it rather
+  // than emptying the piece. What that removes is a face nobody wanted: a
+  // summary reporting "empty · 0 segments" with a button offering to open a
+  // strip that has nothing on it, reached by doing the ordinary thing of
+  // deleting cards. The node is the Creator, and the Creator with nothing in it
+  // is a blank prompt.
+  //
+  // Here rather than in the delete handler, so a hand-edited blob and a saved
+  // workflow arrive in the same shape as one the strip just emptied. The two
+  // ways to begin a piece are still both offered — they are the add tile beside
+  // the card, which is where they are the rest of the time.
+  if (!timeline.segments.length) timeline.segments.push(emptySegment());
   // A clip is not generated, so it cannot share a generation — neither by
   // being merged into the pass in front of it nor by having a card merged into
   // it. Cleared here rather than guarded at every read, the same way the seam

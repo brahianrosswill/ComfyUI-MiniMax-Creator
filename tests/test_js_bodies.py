@@ -272,28 +272,52 @@ try {
   out.errors.push(`clip card: ${error.message}`);
 }
 
-// A new timeline has nothing on it.
+// A piece cannot be empty.
 //
-// The strip used to open as one empty shot, which is what made every piece
-// begin with a generation: the card was there before the user chose anything
-// and could not be deleted while it was the only one. Now both renders have to
-// answer for a strip with no cards at all — every accessor that walks the
-// segments, the lane the node draws them in, and the two tiles that are the
-// only thing on the strip.
+// The strip could hold no cards at all while it was a node of its own, and the
+// two ways to begin one were the whole of what it showed. Under one node that
+// state is a dead end: it is reached by deleting cards, and what it leaves is a
+// summary reporting nothing with a button that opens a strip holding nothing.
+// So a piece is at least one shot, and clearing the last card blanks it instead
+// — from a blob that says otherwise, from a fresh node, and from the delete.
 try {
   const node = fakeNode("MiniMaxH3Timeline", "timeline_data", "{}");
   await ext.nodeCreated(node);
   const body = node.mmcBody;
   const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
-  openTimelineModal({ timeline: body.timeline, onCommit: () => body.commit() });
-  await new Promise((done) => setTimeout(done, 0));
-  const modal = document.body.children.at(-1);
   out.empty = {
+    // An empty blob opens as one blank shot, which is the Creator's own default.
     cards: body.timeline.segments.length,
-    node: body.root.text,
-    modal: modal.text,
-    // ...and it still redraws once something is added, which is the path every
-    // new piece takes on its first click.
+    // ...and writes one back. Committed first on purpose: the widget still holds
+    // the blob it was given until something commits, so reading it before that
+    // would be reading the input rather than what the node now holds.
+    written: (() => { body.commit(); return JSON.parse(body.read()).segments.length; })(),
+    wears: body.editor ? "shot" : "strip",
+    // ...and one written to hold none does too.
+    fromEmptyList: (() => {
+      const other = S.parseTimeline(JSON.stringify({ version: 2, segments: [] }));
+      return other.segments.length;
+    })(),
+    // Deleting down to nothing leaves a blank shot rather than an empty piece,
+    // and the face goes back to being that shot's editor.
+    cleared: await (async () => {
+      const two = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+        version: 2, prompt: "", models: {},
+        segments: [{ prompt: "shot 1", assets: [], loras: [], duration_s: 5 },
+                   { prompt: "shot 2", assets: [], loras: [], duration_s: 5 }],
+      }));
+      await ext.nodeCreated(two);
+      openTimelineModal({ timeline: two.mmcBody.timeline,
+                          onCommit: () => two.mmcBody.commit() });
+      await new Promise((done) => setTimeout(done, 0));
+      two.mmcBody.timeline.segments.splice(0, 2);
+      two.mmcBody.commit();
+      return { cards: two.mmcBody.timeline.segments.length,
+               prompt: two.mmcBody.timeline.segments[0].prompt,
+               wears: two.mmcBody.editor ? "shot" : "strip" };
+    })(),
+    // ...and the strip still redraws once something is added, which is the path
+    // every piece takes on its first click.
     added: (() => {
       body.timeline.segments.push(S.continuingSegment());
       body.commit();
@@ -722,15 +746,19 @@ for wanted in ("Add image", "Add video", "Add audio", "Add LoRA", "Gallery", "Se
     if wanted not in (clip.get("node") or ""):
         FAILURES.append(f"the timeline node body has no {wanted!r} tool")
 
-# A new timeline is an empty strip: no card, and two ways to start one.
+# A piece is at least one shot: the empty strip is not a state the node can be
+# left in, because every way of reaching it is somebody deleting cards.
 empty = report.get("empty", {})
-check("a new timeline holds no cards", empty.get("cards"), 0)
-check("...and still draws after the first is added", empty.get("added"), 1)
-for wanted in ("no frames yet", "Write a segment", "Cut in a clip"):
-    if wanted not in (empty.get("modal") or ""):
-        FAILURES.append(f"the empty strip does not offer {wanted!r}")
-if "Nothing on the strip yet" not in (empty.get("node") or ""):
-    FAILURES.append("the node body does not say the strip is empty")
+check("an empty blob opens as one blank shot", empty.get("cards"), 1)
+check("...which is what gets written back", empty.get("written"), 1)
+check("...and it wears that shot's editor", empty.get("wears"), "shot")
+check("a blob written with no cards opens the same way", empty.get("fromEmptyList"), 1)
+check("deleting every card leaves one blank shot",
+      (empty.get("cleared") or {}).get("cards"), 1)
+check("...with nothing written in it", (empty.get("cleared") or {}).get("prompt"), "")
+check("...and the face back to being that shot's",
+      (empty.get("cleared") or {}).get("wears"), "shot")
+check("...and the strip still draws once a second is added", empty.get("added"), 2)
 
 # Controls that write through an owner's callback still move what they draw.
 # ---- the face rule ----------------------------------------------------------
