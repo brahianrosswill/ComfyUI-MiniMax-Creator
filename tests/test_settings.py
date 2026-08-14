@@ -109,6 +109,22 @@ with tempfile.TemporaryDirectory() as directory:
     check("...and that is what loads", settings.load()["video_crf"], 14)
     check("...and what the save node asks for", settings.video_crf(), 14)
 
+    # A save is a patch over the file, not a replacement of it. The page sends
+    # the one field just edited, so a second save must not hand back the first
+    # field's default — the bug that made a custom stills folder disappear the
+    # moment somebody touched the video one.
+    check("a later save keeps the earlier one",
+          settings.save({"video_prefix": "client/shoot-3/take"}),
+          {**settings.DEFAULTS, "video_crf": 14, "video_prefix": "client/shoot-3/take"})
+    check("...and again, from the other side",
+          settings.save({"image_prefix": "client/stills"}),
+          {**settings.DEFAULTS, "video_crf": 14, "video_prefix": "client/shoot-3/take",
+           "image_prefix": "client/stills"})
+    check("...and that is what loads", settings.load()["video_prefix"], "client/shoot-3/take")
+
+    settings.save({"video_crf": 14, "video_prefix": settings.DEFAULT_VIDEO_PREFIX,
+                   "image_prefix": settings.DEFAULT_IMAGE_PREFIX})
+
     # The one thing the temp file is for: a render reading this while the page
     # writes it must see one or the other, never half a JSON document.
     check("nothing is left beside it", sorted(os.listdir(directory)), [settings.FILE])

@@ -130,9 +130,18 @@ def load():
 
 
 def save(raw):
-    """Store a settings blob and hand back what was stored. Raises ValueError on
-    a value this pack will not write."""
-    stored = clean(raw)
+    """Store a settings patch and hand back the whole stored file. Raises
+    ValueError on a value this pack will not write.
+
+    A patch, not a replacement: the settings page sends the one field somebody
+    just edited, and every field it did not send is one somebody chose earlier.
+    `clean` starts from the defaults — it has to, since it is also what reads a
+    file written by an older version — so the merge happens here, over what is
+    on disk, or typing a video folder would quietly put the stills folder back.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("settings must be an object")
+    stored = clean({**load(), **raw})
     target = path()
     os.makedirs(os.path.dirname(target), exist_ok=True)
     # Written whole and moved into place: the save node reads this file while
