@@ -4,6 +4,8 @@ Write a sentence, attach your media with `@`, press Run. One node holds the whol
 generation and hands back a finished clip with its sound already in it — no
 conditioning sockets, no sampler to re-assemble, no VAE to remember to connect.
 
+Write a second shot on it and the same node is a timeline.
+
 Local open weights only, through core's `comfy_extras/nodes_minimax_h3.py`. No API
 key, nothing uploaded.
 
@@ -19,6 +21,12 @@ resolution and the sampler. The badge on the right (`REF2VA → Ref2VA`) tells y
 which checkpoint this render will land on.
 
 That is the whole workflow. Drop the node, type, run.
+
+Under the prompt there is a stretch of unexposed film — **Write the next shot**.
+Click it and the piece has two shots instead of one, the strip opens on the new
+one, and the node's face becomes the timeline described [below](#more-than-one-shot).
+Delete cards back down to one and the face comes back. There is no mode to pick
+and nothing to switch: one shot or twenty, it is the same node and the same blob.
 
 ## Install
 
@@ -76,7 +84,7 @@ made can go straight back in as a reference.
 **Gallery** on the rail opens straight onto that tab. It is the same picker, so
 renders organize exactly like input files do: make a shelf, drag thumbnails onto
 it, star the keepers, and use **Organize** to move or delete in bulk. Stills and
-finished clips arrive on separate shelves, because the two nodes write to
+finished clips arrive on separate shelves, because videos and stills write to
 separate folders — see below.
 
 Every attachment gets a colour and its chip in the sentence wears the same one, so
@@ -184,7 +192,7 @@ fine-tuned to turn a single temporal latent into a picture while its encoder was
 left frozen. That is why one file does both jobs here: the encoder that reads your
 references is still the stock H3 one, bit for bit.
 
-The body is the Creator's, because the request is a Creator's — nine reference
+The body is the shot editor's, because the request is a shot's — nine reference
 images, three clips, three sounds, a start frame, an end frame, LoRAs, `@`
 mentions, FL2VA/Ref2VA routing, the taeh3 preview. Two pills are its own:
 
@@ -197,15 +205,16 @@ Reconstruction is soft compared to a dedicated image model: fine text, thin
 contours and hair are where it shows first. It is an experiment, marked as one in
 the UI, and the video VAE is not a substitute for it in either direction.
 
-## Timeline
+## More than one shot
 
-A second node for a clip made of several shots. Each card is a whole generation —
-its own prompt, references and LoRAs, edited in the same editor the Creator uses.
+Past one shot the node's face becomes the piece at a glance: the global prompt,
+the shots as a lane strictly proportional to their durations, and the numbers.
+Each card is a whole generation — its own prompt, references and LoRAs, edited in
+the same editor the single-shot face is.
 
-![The Timeline node](docs/img/timeline-node.png)
+![The node with a strip on it](docs/img/timeline-node.png)
 
-The lane in the node body is strictly proportional to the durations. The strip
-inside the modal is where the work happens.
+**Edit timeline** opens the strip, which is where the work happens.
 
 ![The Timeline strip](docs/img/timeline.png)
 
@@ -246,10 +255,29 @@ and a reference image can be narrowed (*person*, *object*, *scene*, *style*) so
 a sheet contributes the likeness without its background. In one pass, all
 citations of the same piece reference share a single `<Picture N>`.
 
-While a chained timeline renders, the preview overlay names the segment the
-sampler is on — *Segment 3 of 5* — so a long strip's step count finally says
-where in the piece you are. Cached segments are skipped, so the chip always
-names the segment actually being made.
+While a chained piece renders, the preview overlay names the pass the sampler is
+on — *Pass 3 of 5* — so a long strip's step count finally says where in the piece
+you are. Cached segments are skipped, so the chip always names the segment
+actually being made.
+
+### Upgrading from the two-node version
+
+The Creator and the Timeline used to be two nodes. They are one now — a Creator
+render was always a one-segment timeline underneath, and the split only ever
+lived in the UI.
+
+Nothing to do. Saved workflows keep working:
+
+- A **Creator** node opens exactly as it did, on the shot you wrote. Its blob is
+  read as the one-shot piece it always was.
+- A **Timeline** node keeps its own id, which is deprecated rather than removed:
+  it is gone from the node search, it still loads, and it mounts the same body.
+  Only the title on the canvas differs. Copy the JSON into a fresh Creator and
+  delete it if you would rather not keep one around.
+
+The blob's shape is the timeline's either way — a global prompt, one canvas, one
+set of weights and a list of segments — so the right-click **Copy creator_data
+JSON** now hands you a piece rather than a lone request.
 
 ## Modes and duration
 
@@ -299,7 +327,7 @@ Folders** sets where — one answer per machine, for every node in the pack:
 
 | | default | lands in |
 |---|---|---|
-| Creator / Timeline | `minimax/renders/H3` | `output/minimax/renders/H3_00001_.mp4` |
+| Creator | `minimax/renders/H3` | `output/minimax/renders/H3_00001_.mp4` |
 | PreStage | `minimax/stills/prestage` | `output/minimax/stills/prestage_00001_.png` |
 
 The last segment names the **files**, not a folder: `client-a/hero` writes
@@ -338,7 +366,7 @@ This is **not** saved into the workflow. A `.json` shared with someone else make
 the same shot at whatever quality their ComfyUI is set to, which is the same
 split as the folder pill above: where a file lands is part of the piece, how many
 megabytes it takes is not. The value lives in `user/minimax_creator.settings.json`
-and applies to the Creator and the Timeline. PreStage stills are PNG and have
+and applies to every video the Creator writes. PreStage stills are PNG and have
 nothing to set.
 
 Needs ComfyUI 0.29 or newer, which is where `crf` reached core's video writer.
