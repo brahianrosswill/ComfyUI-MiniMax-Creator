@@ -397,15 +397,23 @@ export const css = `
 /* --- timeline node body --------------------------------------------------- */
 
 .mmc-tl-summary { gap: 14px; flex: 1; min-height: 0; }
+/* The room grows; the text does not. On a tall node the room soaks up the
+   panel's free height so the reel and the pills dock at the bottom, next to
+   the sampler rows — the shot face's silhouette. On a node sized by content
+   the room is only as tall as the clamped text, so nothing balloons. */
+.mmc-tl-summary-room {
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-height: 40px; cursor: text;
+}
 /* Clamped by lines, not by its flex parent: the node body takes its height from
    what is in it, so "fill the room and hide the rest" gives a prompt of any
-   length all the room it asks for — flex: 1 against a parent that grows is not
+   length all the room it asks for — flex against a parent that grows is not
    a bound at all, and a pasted log made the node taller than the canvas. The
-   max-height is the bound; the flex only lets it be smaller. Six lines at this
-   size and leading is what the summary is for; the modal holds the rest. */
+   max-height is the bound. Six lines at this size and leading is what the
+   summary is for; the modal holds the rest. */
 .mmc-tl-summary-prompt {
-  font-size: 13px; line-height: 1.5; color: var(--mmc-text); cursor: text;
-  flex: 1; min-height: 40px; max-height: 117px; overflow: hidden; word-break: break-word;
+  font-size: 13px; line-height: 1.5; color: var(--mmc-text);
+  flex: 1 1 auto; min-height: 40px; max-height: 117px; overflow: hidden; word-break: break-word;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
 }

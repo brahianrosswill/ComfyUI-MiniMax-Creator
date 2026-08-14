@@ -1923,13 +1923,19 @@ export class TimelineBody {
     ];
 
     return el("div", { class: "mmc-panel mmc-tl-summary" }, [
-      el("div", {
-        class: `mmc-tl-summary-prompt${prompt ? "" : " empty"}`,
-        text: prompt || (single
-          ? t("No global prompt yet — the standing description that opens Shot 1.")
-          : t("No global prompt yet — the standing description every segment inherits.")),
-        onclick: () => this.open(),
-      }),
+      // The prompt's room, not the prompt: the text is clamped to six lines
+      // (see the stylesheet for why), so this wrapper is what soaks up the
+      // panel's free height on a tall node — the reel and the pills dock to
+      // the bottom, beside the sampler rows, the way the shot face's writing
+      // box already pushes its controls down. All of it opens the strip.
+      el("div", { class: "mmc-tl-summary-room", onclick: () => this.open() }, [
+        el("div", {
+          class: `mmc-tl-summary-prompt${prompt ? "" : " empty"}`,
+          text: prompt || (single
+            ? t("No global prompt yet — the standing description that opens Shot 1.")
+            : t("No global prompt yet — the standing description every segment inherits.")),
+        }),
+      ]),
       // The one picture of the timeline the node has room for: blocks at their
       // real relative lengths, so a 10-second shot is visibly twice a 5. Merged
       // shots close ranks under one outline — the same reading as the modal's
