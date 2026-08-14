@@ -13,6 +13,8 @@ import { CreatorEditor } from "./editor.js";
 import { t } from "./i18n.js";
 import { openLoras } from "./loras.js";
 import { openPicker } from "./picker.js";
+import { openPresetLibrary } from "./presetlib.js";
+import * as P from "./presets.js";
 import { PromptBox, openEditorSheet } from "./prompt.js";
 import { openSettings } from "./settings.js";
 import { openTrim } from "./trim.js";
@@ -57,10 +59,15 @@ export function openTimeline(options) {
 const cardWidth = (seconds) => 132 + Math.round(Math.sqrt(seconds) * 26);
 
 class Timeline {
-  constructor({ timeline, onCommit, edit = null }, resolve) {
+  constructor({ timeline, onCommit, edit = null, io = null }, resolve) {
     this.timeline = timeline;
     this.onCommit = onCommit;
     this.resolve = resolve;
+    // The node's sampler widgets, so a card's preset can carry the row it was
+    // dialled at. The modal owns none of them — the sampler belongs to the node,
+    // not to one shot — so this is lent by the body that opened the strip. Absent
+    // where nothing lent it, and then a speed section simply writes nowhere.
+    this.io = io ?? (() => ({ value: (_name, fallback) => fallback, set: () => {} }));
     // A card to open a window on as soon as the strip is up. Set when the strip
     // was opened *by* growing a shot into it: the new card is where the writing
     // is going, so it opens ready rather than waiting to be found.
@@ -1481,6 +1488,23 @@ class Timeline {
       // card's refine never returns a rewritten global prompt — the other
       // cards' rewrites were written against the standing one — so `takePiece`
       // only moves the audio here.
+      // This card, as a preset — the scope that makes the library worth opening
+      // mid-edit. A card has no stage of its own and the piece's last render is
+      // the whole piece rather than this shot, so there is nothing to take as a
+      // cover automatically: one is set by hand from the gallery or not at all.
+      presetTarget: () => ({
+        scope: "shot",
+        label: t(shared ? "Shot {n}" : "Segment {n}", { n: index + 1 }),
+        capture: () => ({
+          data: P.captureShot(this.timeline, index, this.io()),
+          defaultName: (segment.prompt || "").trim().split("\n")[0].slice(0, 48),
+        }),
+        apply: (body, keys, from) => {
+          P.applyToShot(body, keys, segment, this.io(), { from });
+          this.onCommit?.();
+          this.renderStrip();
+        },
+      }),
       onRefined: (result) => this.takePiece(result),
       // …and go with the last rewrite that was using them. The commit is this
       // callback's own: the editor's fired before it, so what it wrote out still
@@ -1701,6 +1725,11 @@ export class TimelineBody {
       setRoute: (route) => { this.timeline.models.route = route; this.commit(); },
       preStage: this.preStage,
       pieceView: this.pieceView(),
+      // The piece's, not this shot's: the face is wearing the only card, but
+      // what you save from a node is the node. Growing a second shot changes
+      // nothing about it, which is the same promise the canvas and the weights
+      // already make.
+      presetTarget: () => this.presetTarget(),
       // One card of a piece, refined against the piece — the same target the
       // strip gives a card, because that is what this is. The route knows a
       // piece of one segment has no cut times of its own and asks the model for
@@ -1777,11 +1806,47 @@ export class TimelineBody {
     this.render();
   }
 
+  /**
+   * What the preset library can save from this node and apply back to it.
+   *
+   * The cover comes off the stage rather than being asked for: the `executed`
+   * message stamped with this node's id is already sitting in `stage.result`, so
+   * the render this preset was saved from is the render on the card. Nothing to
+   * guess and no best frame to pick — and it only ever fills a cover, never
+   * replaces one somebody chose.
+   *
+   * Apply goes through `commit`, which is what runs `syncTimeline`: a restored
+   * strip whose durations can no longer afford their seams has them pruned on
+   * the way in, rather than failing at queue time.
+   */
+  presetTarget() {
+    return {
+      scope: "piece",
+      label: t("this piece"),
+      capture: () => ({
+        data: P.capturePiece(this.timeline, this.widgetIO()),
+        cover: P.coverFromSaved(this.stage?.result?.saved),
+        defaultName: (this.timeline.prompt || this.timeline.segments[0]?.prompt || "")
+          .trim().split("\n")[0].slice(0, 48),
+      }),
+      apply: (body, keys, from) => {
+        P.applyToPiece(body, keys, this.timeline, this.widgetIO(), { from });
+        this.commit();
+      },
+    };
+  }
+
   /** The strip, over the node. `edit` opens a card's window with it — what the
    *  face does on the way from one shot to two, so the new card is where the
    *  writing already is. */
   open({ edit = null } = {}) {
-    openTimeline({ timeline: this.timeline, onCommit: () => this.commit(), edit });
+    openTimeline({
+      timeline: this.timeline,
+      onCommit: () => this.commit(),
+      edit,
+      // Lent so a card's preset can carry the sampler row — see `Timeline.io`.
+      io: () => this.widgetIO(),
+    });
   }
 
   value(name, fallback) {
@@ -1871,6 +1936,9 @@ export class TimelineBody {
              () => this.manageLoras()),
       ]),
       el("div", { class: "mmc-rail-group" }, [
+        tool("Presets", "star",
+             t("Save this setup so you can put it back, or apply one you saved before"),
+             () => openPresetLibrary({ target: this.presetTarget() }).then(() => this.render())),
         tool("Gallery", "gallery",
              t("Browse, organize and attach finished renders and pre-stage stills"),
              () => openPicker({
