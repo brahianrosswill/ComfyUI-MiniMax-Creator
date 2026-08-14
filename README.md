@@ -11,6 +11,33 @@ key, nothing uploaded.
 
 ![Sampling, then the finished clip playing beside the node](docs/img/preview.gif)
 
+## What is new in 2.0
+
+If you already have this pack installed, the headline is that there is one node
+now instead of two. Update, restart, open your workflows — they load and render
+the same. Nothing about a saved piece has to be redone; see
+[Upgrading from the two-node version](#upgrading-from-the-two-node-version) for
+what happens to a Timeline node you already placed.
+
+- **One node, one shot or twenty.** The Creator grew the strip rather than
+  handing it to a second node. **Write the next shot** under the prompt turns the
+  face into a timeline; deleting cards back down to one brings the shot back.
+  A Creator render always was a one-segment timeline underneath — the split only
+  ever lived in the UI.
+- **Two flow clocks on the sampler row.** H3 samples picture and sound on
+  separate schedules, and the row now carries both as **shift** pills. They ship
+  hidden (Settings → **Nodes**) because most rows never leave the checkpoints'
+  own 12/3, at which no shift node is emitted at all; a value off that schedule
+  shows its pill regardless. **turbo** presets them to what the LoRA family it
+  engages was distilled against, and puts them back on release.
+- **Three cache implementations on one pill.** FirstBlockCache and TeaCache from
+  the community, plus core's own EasyCache, which needs nothing installed. One
+  cache at a time.
+- **References citable in the PreStage prompt.** `@ref-2` becomes `Picture 2` —
+  the label core's Qwen-edit encoder writes in front of that slot.
+- **The render overlay counts passes**, not segments — *Pass 3 of 5* — matching
+  what the strip calls them.
+
 ## The node
 
 ![The Creator node](docs/img/ui_simple.png)
@@ -285,11 +312,11 @@ actually being made.
 
 ### Upgrading from the two-node version
 
-The Creator and the Timeline used to be two nodes. They are one now — a Creator
-render was always a one-segment timeline underneath, and the split only ever
-lived in the UI.
+Through 1.x the Creator and the Timeline were two nodes. As of 2.0 they are one
+— a Creator render was always a one-segment timeline underneath, and the split
+only ever lived in the UI.
 
-Nothing to do. Saved workflows keep working:
+Nothing to do, and nothing to migrate. Saved 1.x workflows keep working:
 
 - A **Creator** node opens exactly as it did, on the shot you wrote. Its blob is
   read as the one-shot piece it always was.
