@@ -762,7 +762,9 @@ export class CreatorEditor {
         ...(this.settingsTool ? [el("button", {
           class: "mmc-tool",
           title: t("Preferences for this ComfyUI — output quality. Not saved into the workflow."),
-          onclick: () => openSettings(),
+          // Re-rendered on close: the page can change what the sampler row
+          // draws (the shift pills' visibility), and Done should look done.
+          onclick: () => openSettings().then(() => this.render()),
         }, [el("span", { class: "mmc-tool-icon" }, [icon("gear")]), el("span", { text: t("Settings") })])] : []),
       ]),
     ]);

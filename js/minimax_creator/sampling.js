@@ -12,6 +12,7 @@
 import { el, icon } from "./dom.js";
 import { t } from "./i18n.js";
 import { openChoicePopover, stepperPill } from "./pills.js";
+import { uiSetting } from "./api.js";
 
 export const SEED_CONTROL = ["fixed", "increment", "decrement", "randomize"];
 
@@ -161,7 +162,15 @@ export function samplingBar({ widgets, value, set, perSegment = false, turbo = [
   // the scheduler because they are schedule too: the checkpoints' own values
   // by default, reset by the turbo switch to what the picked LoRA's card
   // names, and honest about which track a wrong value ruins first.
-  if (widgets.shift_video) {
+  //
+  // Hidden unless Settings → Nodes asks for them: most rows never leave the
+  // checkpoints' own schedule, and the widgets keep working underneath — the
+  // turbo switch still writes them, loaded workflows still carry them. A value
+  // *off* that schedule shows its pill whatever the setting says, the custom-CRF
+  // rule: what is in force has to be visible, and hiding it is how a stale
+  // turbo preset would quietly ruin every later render.
+  const showShifts = uiSetting("show_shift_pills", false);
+  if (widgets.shift_video && (showShifts || Number(value("shift_video", 12)) !== 12)) {
     pills.push(stepperPill({
       value: Number(value("shift_video", 12)), min: 0.01, max: 100, step: 0.5, width: "48px",
       title: t("The video flow shift. 12 is the checkpoints' own schedule; a turbo LoRA's card may name another."),
@@ -169,7 +178,7 @@ export function samplingBar({ widgets, value, set, perSegment = false, turbo = [
       onChange: (next) => set("shift_video", next),
     }));
   }
-  if (widgets.shift_audio) {
+  if (widgets.shift_audio && (showShifts || Number(value("shift_audio", 3)) !== 3)) {
     pills.push(stepperPill({
       value: Number(value("shift_audio", 3)), min: 0.01, max: 100, step: 0.5, width: "48px",
       title: t("The audio flow shift. 3 is the checkpoints' own schedule. A wrong one distorts the soundtrack before it touches the picture."),

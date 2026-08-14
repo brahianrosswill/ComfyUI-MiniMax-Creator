@@ -1879,7 +1879,9 @@ export class TimelineBody {
              })),
         tool("Settings", "gear",
              t("Preferences for this ComfyUI — output quality. Not saved into the workflow."),
-             () => openSettings()),
+             // Re-rendered on close: the page can change what the sampler row
+             // draws (the shift pills' visibility), and Done should look done.
+             () => openSettings().then(() => this.render())),
       ]),
     ]);
   }

@@ -8,6 +8,7 @@ import { TimelineBody } from "./minimax_creator/timeline.js";
 import { PreStageBody } from "./minimax_creator/prestage.js";
 import { Satellite } from "./minimax_creator/satellite.js";
 import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
+import { primeSettings } from "./minimax_creator/api.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
@@ -254,6 +255,11 @@ function attach(node, build) {
   requestAnimationFrame(() => hideWidget(widget));
 
   const body = build(widget);
+  // The sampler row reads UI preferences (the shift pills' visibility) from the
+  // settings cache, which is empty until the server first answers. Prime it —
+  // fetched once, ever — and repaint this body when the answer lands, so a node
+  // drawn before the reply shows the row the settings actually ask for.
+  primeSettings(() => body.render?.());
   node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
     serialize: false,
     hideOnZoom: false,

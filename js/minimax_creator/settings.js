@@ -20,7 +20,7 @@
 // rather than the workflow's, which is the only reason they share a page.
 
 import { el, mountOverlay } from "./dom.js";
-import { loadSettings, saveSettings } from "./api.js";
+import { loadSettings, saveSettings, noteSettings } from "./api.js";
 import { t } from "./i18n.js";
 import { TOKENS, cleanPrefix, folderOf, stemOf, examplePath } from "./outputs.js";
 
@@ -53,6 +53,7 @@ export function openSettings() {
 const TABS = [
   { key: "quality", label: "Quality" },
   { key: "folders", label: "Folders" },
+  { key: "nodes", label: "Nodes" },
 ];
 
 class SettingsPage {
@@ -96,6 +97,7 @@ class SettingsPage {
   async load() {
     try {
       this.settings = await loadSettings();
+      noteSettings(this.settings);
     } catch (error) {
       this.problem = t("Could not read the settings — {error}", { error: error.message });
     }
@@ -116,6 +118,9 @@ class SettingsPage {
     this.render();
     try {
       this.settings = await saveSettings(patch);
+      // The bodies read some of these (the shift pills' visibility) off the
+      // cache in api.js, so what the server actually stored goes there too.
+      noteSettings(this.settings);
     } catch (error) {
       this.settings = previous;
       this.problem = t("Not saved — {error}", { error: error.message });
@@ -149,7 +154,9 @@ class SettingsPage {
     }
     this.body.replaceChildren(
       ...(this.problem ? [el("div", { class: "mmc-set-problem", text: this.problem })] : []),
-      ...(this.tab === "quality" ? [this.renderQuality()] : this.renderFolders()),
+      ...(this.tab === "quality" ? [this.renderQuality()]
+        : this.tab === "nodes" ? this.renderNodes()
+        : this.renderFolders()),
     );
   }
 
@@ -193,6 +200,55 @@ class SettingsPage {
           }),
         ]),
       ]);
+  }
+
+  // ---- nodes ----------------------------------------------------------------
+
+  /**
+   * What the node faces offer, as opposed to what a render writes. First (and
+   * so far only) resident: the sampler row's two flow-shift pills, hidden by
+   * default because most rows never leave the checkpoints' own schedule.
+   *
+   * Hiding the pills does not hide the values: the widgets stay on the node,
+   * the turbo switch and loaded workflows still write them, and the graph
+   * still honours them — which is why a value off the checkpoints' own 12/3
+   * keeps its pill on screen whatever this says. In force means visible, the
+   * same rule the Custom quality row lives by.
+   */
+  renderNodes() {
+    const shown = this.settings.show_shift_pills === true;
+    const rows = [
+      { value: false, label: "Hidden",
+        note: "The row before the shifts arrived. A value away from the checkpoints' "
+            + "own schedule — a turbo preset, a loaded workflow — still shows its "
+            + "pill: it is in force, so it stays visible." },
+      { value: true, label: "Shown",
+        note: "Two stepper pills after the scheduler, for dialling the two schedules "
+            + "by hand. A turbo LoRA's card may name the values it was distilled against." },
+    ];
+    return [this.section("Nodes", "Flow shift pills",
+      "Whether the sampler row offers H3's two flow shifts — the video and audio "
+      + "schedule clocks. The values apply either way; this only decides who has "
+      + "to look at them.",
+      [
+        el("div", { class: "mmc-set-choices" }, rows.map((row) => el("button", {
+          class: "mmc-opt mmc-set-opt",
+          "aria-checked": row.value === shown,
+          onclick: () => row.value !== shown && this.set({ show_shift_pills: row.value }),
+        }, [
+          el("span", { class: "mmc-radio" }),
+          el("span", { class: "mmc-set-opt-text" }, [
+            el("span", { class: "mmc-set-opt-label", text: t(row.label) }),
+            el("span", { class: "mmc-set-opt-note", text: t(row.note) }),
+          ]),
+        ]))),
+        el("div", { class: "mmc-set-foot" }, [
+          el("span", {
+            text: t("Open nodes pick the change up the next time they redraw — "
+                + "closing this page is enough."),
+          }),
+        ]),
+      ])];
   }
 
   // ---- folders ---------------------------------------------------------------

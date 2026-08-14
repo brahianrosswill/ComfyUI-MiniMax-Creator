@@ -67,6 +67,16 @@ check("an unknown key is dropped", sorted(settings.clean({"nonsense": 1})),
 
 refuses("a value off the encoder's scale", {"video_crf": 99}, "between")
 
+# The shift pills' visibility. A strict boolean: `1` and `"true"` are refused
+# rather than coerced, so the file never holds a value the page's two radio
+# rows cannot show back.
+check("the shift pills are hidden by default", settings.clean({})["show_shift_pills"], False)
+check("showing the shift pills is kept",
+      settings.clean({"show_shift_pills": True})["show_shift_pills"], True)
+check("a null shift-pill setting is the default",
+      settings.clean({"show_shift_pills": None})["show_shift_pills"], False)
+refuses("a shift-pill setting that is not a boolean", {"show_shift_pills": 1}, "true or false")
+
 # The output folders. `outputs.clean` is the authority — this only has to show
 # that the setting is held to it, so a prefix that would be refused at the end
 # of a render is refused while it is still a field being edited.

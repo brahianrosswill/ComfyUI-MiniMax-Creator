@@ -558,9 +558,9 @@ try {
   out.errors.push(`arch switch: ${error.message}`);
 }
 
-// The settings page: two tabs now, because where files land moved off the node
-// bodies and onto this machine. Read the rendered tree rather than a screenshot
-// — what matters is that both tabs exist, the folder fields carry the stored
+// The settings page: three tabs now — how good the file is, where it goes, and
+// what the node faces offer. Read the rendered tree rather than a screenshot
+// — what matters is that the tabs exist, the folder fields carry the stored
 // prefixes, and a committed edit posts the key the server expects.
 try {
   const { openSettings } = await import("./js/minimax_creator/settings.js");
@@ -594,6 +594,17 @@ try {
   fields[0].listeners.change[0]();
   await new Promise((done) => setTimeout(done, 0));
   out.settings.posted = globalThis.__posted;
+
+  // The Nodes tab: the shift pills' visibility, read but not clicked — a click
+  // would append to __posted and muddy the folder assertion above.
+  tabButtons[2].listeners.click[0]();
+  const opts = [];
+  const findOpts = (node) => {
+    if (node.className === "mmc-opt mmc-set-opt") opts.push(node);
+    (node.children ?? []).forEach(findOpts);
+  };
+  findOpts(page);
+  out.settings.shiftRows = opts.map((o) => o.getAttribute("aria-checked"));
 } catch (error) {
   out.errors.push(`settings page: ${error.message}`);
 }
@@ -856,11 +867,15 @@ for unwanted in ("Settings", " s ", "sweep"):
         FAILURES.append(f"the H3 still's body should not carry {unwanted!r}")
 check("the Creator keeps the settings tool", "Settings" in (report["creator"] or ""), True)
 
-# The settings page owns two questions now — how good the file is, and where it
-# goes — so it has two tabs, and the folder fields are the only place the
-# prefixes can be set.
+# The settings page owns three questions now — how good the file is, where it
+# goes, and what the node faces offer — so it has three tabs, and the folder
+# fields are the only place the prefixes can be set.
 settings = report.get("settings", {})
-check("the settings page has both tabs", settings.get("tabs"), ["Quality", "Folders"])
+check("the settings page has all three tabs", settings.get("tabs"),
+      ["Quality", "Folders", "Nodes"])
+# The shift pills ship hidden: the Nodes tab's two rows are Hidden then Shown,
+# and Hidden is the one checked on a fresh settings file.
+check("the shift pills are hidden by default", settings.get("shiftRows"), ["true", "false"])
 check("the quality tab shows the encoder value", settings.get("quality"), True)
 check("the folders tab carries both stored prefixes", settings.get("fields"),
       ["minimax/renders/H3", "minimax/stills/prestage"])
