@@ -78,7 +78,7 @@ if result.returncode != 0:
     sys.exit(1)
 mirror = json.loads(result.stdout)
 
-FAILURES = []
+from harness import FAILURES, passed
 
 
 def check(label, got, want):
@@ -124,9 +124,55 @@ for quality, steps in mirror["ideogram"].items():
 check("turbo steps", mirror["turbo"], ci.TURBO_STEPS)
 check("krea RAW row", mirror["krea_raw"], ci.KREA_RAW)
 
-if FAILURES:
-    print(f"{len(FAILURES)} disagreement(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"state.js mirrors compile_image.py across {len(mirror['canvases'])} canvases")
+# ---- citing a style reference -----------------------------------------------
+#
+# The prompt names a reference by handle and the compile turns it into the label
+# the encoder itself writes: core's `TextEncodeQwenImageEditPlus` builds
+# "Picture 1: <|vision_start|>..." per slot, so `Picture N` is the string the
+# model actually reads. Plain, not `<Picture N>` — the brackets are MiniMax H3's
+# convention and this is Qwen's.
+
+
+def still(prompt, refs=(), arch="krea2"):
+    return {"arch": arch, "prompt": prompt, "width": 1024, "height": 1024,
+            "refs": [{"handle": h, "filename": f} for h, f in refs], "models": {}}
+
+
+REFS = (("ref-1", "plate.png"), ("ref-2", "coat.png"))
+
+check("a citation becomes the encoder's own label",
+      ci.compile_prestage(still("the coat from @ref-2, lit like @ref-1", REFS)).prompt,
+      "the coat from Picture 2, lit like Picture 1")
+check("...numbered by slot, not by handle",
+      ci.compile_prestage(still("@ref-2", (("ref-2", "a.png"), ("ref-1", "b.png")))).prompt,
+      "Picture 1")
+check("the payload still carries filenames in slot order",
+      ci.compile_prestage(still("@ref-1 and @ref-2", REFS)).refs, ["plate.png", "coat.png"])
+check("an uncited reference still rides in as a slot",
+      ci.compile_prestage(still("a woman in a red coat", REFS)).refs,
+      ["plate.png", "coat.png"])
+check("ordinary prose is not a citation",
+      ci.compile_prestage(still("meet me @ 5 in the courtyard", REFS)).prompt,
+      "meet me @ 5 in the courtyard")
+
+# A handle naming nothing is an error rather than prose left alone: it means a
+# reference was removed and the sentence still points at it.
+try:
+    ci.compile_prestage(still("lit like @ref-9", REFS))
+except ci.CompileError as exc:
+    if "@ref-9" not in str(exc):
+        FAILURES.append(f"a dangling citation does not name itself: {exc}")
+else:
+    FAILURES.append("a dangling citation was not refused")
+
+# Ideogram reads no references at all, so it is refused for the reference rather
+# than for the citation — one mistake, and the one the user made.
+try:
+    ci.compile_prestage(still("@ref-1", REFS, arch="ideogram4"))
+except ci.CompileError as exc:
+    if "Ideogram" not in str(exc):
+        FAILURES.append(f"a citation on Ideogram is refused for the wrong reason: {exc}")
+else:
+    FAILURES.append("style references on Ideogram were not refused")
+
+passed(f"state.js mirrors compile_image.py across {len(mirror['canvases'])} canvases")

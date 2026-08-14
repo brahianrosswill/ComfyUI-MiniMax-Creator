@@ -57,7 +57,7 @@ if result.returncode != 0:
     sys.exit(1)
 mirror = json.loads(result.stdout)
 
-FAILURES = []
+from harness import FAILURES, passed
 
 
 def check(label, got, want):
@@ -80,10 +80,5 @@ for key, size in mirror["canvases"].items():
 for frames, trained in mirror["trained"].items():
     check(f"is_trained_length({frames})", trained, canvas.is_trained_length(int(frames)))
 
-if FAILURES:
-    print(f"{len(FAILURES)} disagreement(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"canvas.js mirrors canvas.py across {len(mirror['frames'])} durations "
+passed(f"canvas.js mirrors canvas.py across {len(mirror['frames'])} durations "
       f"and {len(mirror['canvases'])} canvases")

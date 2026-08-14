@@ -18,7 +18,7 @@ import { openSettings } from "./settings.js";
 import { openTrim } from "./trim.js";
 import { openAspectPopover, openResolutionPopover, openChoicePopover, stepperPill, aspectGlyph, PILL_GLYPH } from "./pills.js";
 import { refine, refineButton, chosenModel as refineModel } from "./refine.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as S from "./state.js";
@@ -57,10 +57,14 @@ export function openTimeline(options) {
 const cardWidth = (seconds) => 132 + Math.round(Math.sqrt(seconds) * 26);
 
 class Timeline {
-  constructor({ timeline, onCommit }, resolve) {
+  constructor({ timeline, onCommit, edit = null }, resolve) {
     this.timeline = timeline;
     this.onCommit = onCommit;
     this.resolve = resolve;
+    // A card to open a window on as soon as the strip is up. Set when the strip
+    // was opened *by* growing a shot into it: the new card is where the writing
+    // is going, so it opens ready rather than waiting to be found.
+    this.openOnMount = edit;
   }
 
   commit() {
@@ -221,6 +225,10 @@ class Timeline {
 
     this.unmount = mountOverlay(this.overlay, () => this.close());
     this.render();
+    if (this.openOnMount != null && this.timeline.segments[this.openOnMount]) {
+      this.edit(this.openOnMount);
+      this.openOnMount = null;
+    }
   }
 
   close() {
@@ -595,20 +603,12 @@ class Timeline {
       if (position > 0) parts.push(this.renderJoin(pass.start));
       parts.push(this.renderPass(pass));
     });
-    // Nothing on the strip is not an error state, it is leader: the unexposed
-    // stretch at the head of a reel, waiting to be shot. So an empty timeline
-    // gets the whole width and says what the two ways to begin are, rather than
-    // a grey sentence next to two small tiles — and the small tiles come back
-    // the moment there is a card for them to sit after.
-    if (!passes.length) {
-      // The strip is a grid of min-content columns, which is right for cards
-      // and wrong for the one panel that stands in for all of them.
-      this.stripHost.classList.toggle("has-pass", false);
-      this.stripHost.classList.toggle("leader", true);
-      this.stripHost.replaceChildren(this.renderLeader());
-      return;
-    }
-    this.stripHost.classList.toggle("leader", false);
+    // No empty case: `syncTimeline` keeps a piece at one shot or more, so the
+    // strip always has a card to draw. What used to be here was the leader —
+    // the unexposed head of a reel, with the two ways to begin on it — and it
+    // went when the last card stopped being deletable down to nothing. The two
+    // ways are still both offered, on the add tile beside the card, which is
+    // where they were every other time.
     const what = S.isSingle(this.timeline) ? "Shot" : "Segment";
     // The refusal is the tooltip when there is one: the button says why it is
     // dead rather than leaving the user to find out at queue time.
@@ -636,44 +636,6 @@ class Timeline {
     this.stripHost.classList.toggle(
       "has-pass", passes.some((pass) => pass.segments.length > 1));
     this.stripHost.replaceChildren(...parts);
-  }
-
-  /**
-   * The head of an unshot reel: what a timeline looks like before it has one.
-   *
-   * Two ways to fill a stretch of a piece, side by side and equally weighted,
-   * because neither is the default — that is the whole reason there is no card
-   * here to begin with. Each says what it is in the terms the strip uses
-   * everywhere else: a segment is written and generated, a clip already exists
-   * and is played.
-   */
-  renderLeader() {
-    const refusal = S.addSegmentRefusal(this.timeline);
-    const choice = (glyph, label, line, onclick) => el("button", {
-      class: "mmc-tl-start",
-      disabled: refusal ? true : undefined,
-      title: refusal ?? undefined,
-      onclick,
-    }, [
-      el("span", { class: "mmc-tl-start-icon" }, [icon(glyph, 20)]),
-      el("span", { class: "mmc-tl-start-text" }, [
-        el("span", { class: "mmc-tl-start-name", text: label }),
-        el("span", { class: "mmc-tl-start-line", text: line }),
-      ]),
-    ]);
-
-    return el("div", { class: "mmc-tl-leader" }, [
-      el("div", { class: "mmc-tl-leader-head" }, [
-        el("span", { class: "mmc-tl-leader-mark", text: t("no frames yet") }),
-        el("span", { class: "mmc-tl-leader-line", text: t("A piece starts either way — written, or brought.") }),
-      ]),
-      el("div", { class: "mmc-tl-leader-choices" }, [
-        choice("pen", t("Write a segment"),
-               t("A shot the model generates from your prompt."), () => this.add()),
-        choice("video", t("Cut in a clip"),
-               t("Footage you already have, played as it is."), () => this.addClip()),
-      ]),
-    ]);
   }
 
   /**
@@ -1559,15 +1521,23 @@ class Timeline {
  * pills only read and write `widget.value`, exactly as the JSON blob does.
  */
 export class TimelineBody {
-  /** `preStage` is the pre-stage pill's wiring — see minimax_creator.js. */
-  constructor({ read, write, widgets = {}, onWidgetChange, nodeId, preStage = null }) {
+  /** `preStage` and `face` are wiring the node supplies — see minimax_creator.js.
+   *  `face` is where the piece-view pin is kept, which is a preference about
+   *  this node rather than anything the render reads, so it lives on the node
+   *  and not in the blob. */
+  constructor({ read, write, widgets = {}, onWidgetChange, nodeId,
+                preStage = null, face = null }) {
     this.read = read;
     this.write = write;
     this.widgets = widgets;
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
     this.preStage = preStage;
+    this.face = face;
     this.timeline = S.parseTimeline(read());
+    // The face's editor, when the piece is one shot and the face is wearing
+    // one. Null the rest of the time — see `loneShot`.
+    this.faceEditor = null;
 
     // The same stage the Creator has, showing the same thing: a timeline is one
     // clip, and what it is making is one picture whatever the strip looks like.
@@ -1598,6 +1568,7 @@ export class TimelineBody {
   destroy() {
     this.stage?.destroy();
     this.laneFit?.disconnect();
+    this.dropFaceEditor();
   }
 
   /** See `CreatorEditor.adoptWeights` — same rescue, same reason. */
@@ -1610,7 +1581,190 @@ export class TimelineBody {
    *  the node is created, so the body built in `nodeCreated` saw the default. */
   reload() {
     this.timeline = S.parseTimeline(this.read());
+    // The face editor closes over the segment object it was handed, and this is
+    // a different one. Dropped rather than re-pointed: `render` builds another
+    // against whatever the strip now holds.
+    this.dropFaceEditor();
     this.render();
+  }
+
+  /**
+   * Whether this piece is one shot and nothing else — the rule that picks the
+   * face.
+   *
+   * **The face is the smallest one that can show everything this piece has
+   * set.** One segment is not enough on its own: a piece can carry a global
+   * prompt, a reference pool, LoRAs patched onto every shot and the two
+   * Context-IR audio fields, and none of those has anywhere to live on a face
+   * that is one shot's editor. A face that cannot draw a field it still queues
+   * is a trap, so the presence of any of them takes the strip face instead.
+   *
+   * That is also why there is no way back other than emptying them: collapsing
+   * is what setting them does, run backwards. Nothing is stored and nothing is
+   * toggled — this is asked on every render.
+   *
+   * A supplied clip is not a shot. A piece of one clip has no generation to put
+   * on the face at all, so it keeps the strip.
+   */
+  /**
+   * Which face this node is actually wearing.
+   *
+   * The content rule below decides what the face *can* be; this is what it is.
+   * A piece of one shot can be shown either way and the pin says which — asked
+   * for, because a piece holds things a shot does not and there would otherwise
+   * be no way to reach them: you would need a second shot before you could set
+   * the standing prompt that the second shot is for.
+   *
+   * The pin only ever adds the strip. It cannot take one away, so the guarantee
+   * the content rule makes — that a face never hides a field it still queues —
+   * is not something a preference can switch off.
+   */
+  showsStrip() {
+    return !this.loneShot() || !!this.face?.pinned();
+  }
+
+  loneShot() {
+    const piece = this.timeline;
+    return piece.segments.length === 1
+      && !S.isClip(piece.segments[0])
+      && !(piece.prompt || "").trim()
+      && !(piece.soundscape || "").trim()
+      && !(piece.music || "").trim()
+      && !(piece.assets?.length)
+      && !this.heldLoras().length;
+  }
+
+  /** The piece LoRAs the shot face has no slot for. The turbo entry is not one
+   *  of them: it lives on the piece because turbo is a run-level switch, but
+   *  the shot face wears it in full — the lit turbo pill names the file, the
+   *  quality picker sets its steps, the weights popover picks it. Counting it
+   *  here made throwing turbo on the Creator face flip the node onto the strip
+   *  and hold it there, which read as a face that could not be left. */
+  heldLoras() {
+    const turboFile = this.timeline.turbo?.lora;
+    return (this.timeline.loras ?? []).filter((entry) => entry.name !== turboFile);
+  }
+
+  /** The editor this body is currently wearing, if it is wearing one. Named to
+   *  match `PreStageBody.editor`: both are a body that sometimes *is* a
+   *  `CreatorEditor` and sometimes holds one. */
+  get editor() { return this.faceEditor; }
+
+  /** The piece-view toggle's wiring, for whichever face is drawing it. Null when
+   *  the piece has more than one shot: there is no shot face for it to go back
+   *  to, so a control offering one would be a lie. */
+  pieceView() {
+    if (!this.face || !this.loneShot()) return null;
+    return {
+      shown: () => this.showsStrip(),
+      toggle: () => { this.face.pin(!this.face.pinned()); this.render(); },
+    };
+  }
+
+  dropFaceEditor() {
+    this.faceEditor?.destroy();
+    this.faceEditor = null;
+  }
+
+  /**
+   * The one shot's editor, on the node's face.
+   *
+   * The Creator node's body, unchanged, because it *is* the Creator node's body
+   * — the same class the strip opens a card with, mounted on the face instead of
+   * in a window. What it is told that a card is not: it owns the node (so it
+   * draws the sampler row, the weights pill and the stage), and its canvas and
+   * weights live one level up on the piece.
+   *
+   * Built once per segment object and kept, because it holds a contenteditable
+   * with a caret in it: rebuilding it on every commit would take the caret away
+   * mid-sentence, which is the whole reason `CreatorEditor` refills hosts rather
+   * than re-rendering itself.
+   */
+  faceBody() {
+    const segment = this.timeline.segments[0];
+    if (this.faceEditor?.state === segment) return this.faceEditor;
+    this.dropFaceEditor();
+    this.faceEditor = new CreatorEditor({
+      state: segment,
+      // The canvas, the weights and the turbo switch are the piece's, exactly as
+      // they are for a strip of twenty. Being the only shot changes nothing
+      // about where they live — which is what makes growing a second one a
+      // matter of adding a card and not of moving any settings.
+      piece: this.timeline,
+      onCommit: () => this.commit(),
+      samplingWidgets: this.widgets,
+      onWidgetChange: this.onWidgetChange,
+      nodeId: this.nodeId,
+      // The node's, so a render lands in the satellite the body already owns
+      // rather than in a second stage listening for the same previews.
+      stage: this.stage,
+      setRoute: (route) => { this.timeline.models.route = route; this.commit(); },
+      preStage: this.preStage,
+      pieceView: this.pieceView(),
+      // One card of a piece, refined against the piece — the same target the
+      // strip gives a card, because that is what this is. The route knows a
+      // piece of one segment has no cut times of its own and asks the model for
+      // the cuts, which is what the Creator always did.
+      refineTarget: () => ({
+        kind: "segment",
+        index: 0,
+        data: JSON.parse(S.serializeTimeline(this.timeline)),
+      }),
+      // No `onRefined`: with no strip there is nothing above this shot for the
+      // soundscape and the score to belong to, so the editor keeps its own audio
+      // fields and writes them onto the segment. Setting the *piece's* is what
+      // the strip face is for, and doing it is what takes you there.
+      afterPanel: () => [this.renderGrow()],
+    });
+    return this.faceEditor;
+  }
+
+  /**
+   * Unexposed film: the stretch after the shot, where the next one goes.
+   *
+   * The leader is the unexposed head of a reel, and this is the same idea one
+   * card later: a perforation rail across the body, meaning film that has not
+   * been shot. The strip used to draw a leader of its own for a piece with
+   * nothing on it; a piece cannot be empty any more, so this is the only place
+   * the rail is left — and the only place it was ever really needed.
+   *
+   * Quiet on purpose. Most renders are one shot, and a control that announced
+   * itself would be wrong nine times out of ten. It is the only thing between
+   * the prompt and the sampler row, on a face read top to bottom.
+   */
+  renderGrow() {
+    const full = this.timeline.segments.length >= S.MAX_SEGMENTS;
+    return el("button", {
+      class: "mmc-tl-grow",
+      disabled: full,
+      title: full
+        ? t("This piece is at its limit of {count} shots.", { count: S.MAX_SEGMENTS })
+        : t("Add a second shot and open the strip. One shot or twenty, it is the same node."),
+      onclick: () => this.growIntoStrip(),
+    }, [el("span", { class: "mmc-tl-grow-mark", text: "+" }),
+        el("span", { text: t("Write the next shot") })]);
+  }
+
+  /**
+   * One shot becomes two, and the strip opens over it.
+   *
+   * The face does not mutate behind the user. They have been writing in the box
+   * on it, and replacing that box with a summary at the moment they ask for more
+   * room would be taking the writing surface away as a reward for wanting one.
+   * So the window arrives instead: card 1 is the shot they wrote, card 2 is the
+   * new one, open and ready. They watch the promotion happen in the place the
+   * new thing lives, and the face has changed by the time they close it.
+   *
+   * The new card is `continuingSegment` — a live seam on both tracks with a
+   * medium blend — because that is already what appending to the strip gives
+   * you, and the face must not be a second answer to a question the strip has
+   * answered.
+   */
+  growIntoStrip() {
+    if (this.timeline.segments.length >= S.MAX_SEGMENTS) return;
+    this.timeline.segments.push(S.continuingSegment());
+    this.commit();
+    this.open({ edit: this.timeline.segments.length - 1 });
   }
 
   commit() {
@@ -1623,8 +1777,11 @@ export class TimelineBody {
     this.render();
   }
 
-  open() {
-    openTimeline({ timeline: this.timeline, onCommit: () => this.commit() });
+  /** The strip, over the node. `edit` opens a card's window with it — what the
+   *  face does on the way from one shot to two, so the new card is where the
+   *  writing already is. */
+  open({ edit = null } = {}) {
+    openTimeline({ timeline: this.timeline, onCommit: () => this.commit(), edit });
   }
 
   value(name, fallback) {
@@ -1632,20 +1789,9 @@ export class TimelineBody {
     return widget ? widget.value : fallback;
   }
 
-  /** The sampler widgets as turbo.js wants them: write-through without the
-   *  re-render, because everything that uses this commits — and renders — once
-   *  at the end rather than three times along the way. */
+  /** See `sampling.widgetIO`. */
   widgetIO() {
-    return {
-      value: (name, fallback) => this.value(name, fallback),
-      set: (name, value) => {
-        const widget = this.widgets[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
-        this.onWidgetChange?.();
-      },
-    };
+    return widgetIO(() => this.widgets, () => this.onWidgetChange?.());
   }
 
   /** Write through to the real widget, callback included — some of them (the
@@ -1660,6 +1806,26 @@ export class TimelineBody {
   }
 
   render() {
+    // One shot wears its own editor; anything more wears the strip's summary.
+    // Which of them, on every render, off `loneShot` — there is no mode stored
+    // anywhere and nothing to get out of step with the piece.
+    if (!this.showsStrip()) {
+      const editor = this.faceBody();
+      editor.render();
+      // The editor's root *is* the body here — it brings its own rail, panel
+      // and sampler row, and its `afterPanel` puts the unexposed film between
+      // the last two.
+      if (this.root.firstChild !== editor.root) this.root.replaceChildren(editor.root);
+      // The editor's root is a body in its own right, padding and all. Hosting
+      // it inside another one would inset the face twice — which is a narrower
+      // face than the strip's on a node of the same width, and it showed as the
+      // sampler pills wrapping a row earlier here than there.
+      this.root.classList.add("hosting");
+      this.laneFit?.disconnect();
+      return;
+    }
+    this.root.classList.remove("hosting");
+    this.dropFaceEditor();
     // Same order as the Creator: the rail, what you are asking for, then how it
     // is run. The picture is beside the node, in the satellite.
     this.root.replaceChildren(this.renderRail(), this.renderPanel(), this.renderSampling());
@@ -1713,7 +1879,9 @@ export class TimelineBody {
              })),
         tool("Settings", "gear",
              t("Preferences for this ComfyUI — output quality. Not saved into the workflow."),
-             () => openSettings()),
+             // Re-rendered on close: the page can change what the sampler row
+             // draws (the shift pills' visibility), and Done should look done.
+             () => openSettings().then(() => this.render())),
       ]),
     ]);
   }
@@ -1768,26 +1936,27 @@ export class TimelineBody {
     ];
 
     return el("div", { class: "mmc-panel mmc-tl-summary" }, [
-      el("div", {
-        class: `mmc-tl-summary-prompt${prompt ? "" : " empty"}`,
-        text: prompt || (single
-          ? t("No global prompt yet — the standing description that opens Shot 1.")
-          : t("No global prompt yet — the standing description every segment inherits.")),
-        onclick: () => this.open(),
-      }),
+      // The prompt's room, not the prompt: the text is clamped to six lines
+      // (see the stylesheet for why), so this wrapper is what soaks up the
+      // panel's free height on a tall node — the reel and the pills dock to
+      // the bottom, beside the sampler rows, the way the shot face's writing
+      // box already pushes its controls down. All of it opens the strip.
+      el("div", { class: "mmc-tl-summary-room", onclick: () => this.open() }, [
+        el("div", {
+          class: `mmc-tl-summary-prompt${prompt ? "" : " empty"}`,
+          text: prompt || (single
+            ? t("No global prompt yet — the standing description that opens Shot 1.")
+            : t("No global prompt yet — the standing description every segment inherits.")),
+        }),
+      ]),
       // The one picture of the timeline the node has room for: blocks at their
       // real relative lengths, so a 10-second shot is visibly twice a 5. Merged
       // shots close ranks under one outline — the same reading as the modal's
       // casing, at a tenth the size.
-      // Nothing to draw the strip from until there is a card on it. Said here
-      // rather than left as an empty band, because an empty band reads as a
-      // render that produced nothing rather than as a piece not yet written.
-      ...(segments.length ? [this.renderLane(passes)] : [el("div", {
-        class: "mmc-tl-empty",
-        title: t("Open the timeline: the global prompt, the segments, and what happens between them"),
-        text: t("Nothing on the strip yet — open the timeline to write a shot or cut in a clip."),
-        onclick: () => this.open(),
-      })]),
+      // Always a lane: `syncTimeline` keeps a piece at one shot or more, and a
+      // piece of one wears that shot's editor rather than this summary — so by
+      // the time anything gets here there are at least two cards to draw.
+      this.renderLane(passes),
       el("div", { class: "mmc-pills" }, [
         // The render mode leads, because it is the one thing about this node
         // that changes what all the other numbers mean.
@@ -1801,8 +1970,7 @@ export class TimelineBody {
                 + "shots generates them at once, with the cuts written into its description."),
         }, [
           icon("timeline", 16),
-          el("span", { text: !segments.length ? t("empty")
-            : single ? t("one pass")
+          el("span", { text: single ? t("one pass")
               : passes.length === segments.length ? t("chained")
                 : t("{count} passes", { count: passes.length }) }),
           el("span", {
@@ -1857,9 +2025,63 @@ export class TimelineBody {
           title: t("Open the timeline: the global prompt, the segments, and what happens between them"),
           onclick: () => this.open(),
         }, [icon("sliders", 16), el("span", { text: t("Edit timeline") })]),
+        ...(this.pieceView() ? [this.renderPieceViewPill()] : this.renderHeldPieceViewPill()),
         ...(this.preStage ? [this.renderPreStagePill()] : []),
       ]),
     ]);
+  }
+
+  /** The way back to the shot, on the strip face. Drawn only while there is one
+   *  shot to go back to — see `pieceView`. Deliberately the pill the shot face
+   *  draws, in the same place and with the same words: one control with two
+   *  states, not two controls that happen to be opposites. */
+  renderPieceViewPill() {
+    const view = this.pieceView();
+    return el("button", {
+      class: "mmc-pill mmc-piece-toggle on",
+      "aria-pressed": "true",
+      title: t("Showing the whole piece. Click to go back to the shot."),
+      onclick: () => view.toggle(),
+    }, [icon("timeline", 16), el("span", { text: t("Timeline") })]);
+  }
+
+  /** What a one-shot piece has set that a shot's face has no slot for — the
+   *  fields whose presence keeps this node on the strip. */
+  pieceHolds() {
+    const piece = this.timeline;
+    return [
+      ...((piece.prompt || "").trim() ? [t("the global prompt")] : []),
+      ...((piece.soundscape || "").trim() ? [t("the soundscape")] : []),
+      ...((piece.music || "").trim() ? [t("the music")] : []),
+      ...(piece.assets?.length ? [t("the reference pool")] : []),
+      ...(this.heldLoras().length ? [t("the piece's LoRAs")] : []),
+    ];
+  }
+
+  /**
+   * The same pill, dead, when the piece is one shot but cannot wear its face.
+   *
+   * The rule is the face never hides a field it still queues, so a piece
+   * carrying a global prompt has no shot face to go back to — but a control
+   * that simply vanishes reads as a way back that is broken. Drawn dead
+   * instead, naming exactly what holds the strip open, which is also the
+   * instruction for getting back: empty those fields and the toggle wakes.
+   * A piece of several shots draws nothing — there is no shot to go back to
+   * and nothing a user could empty to make one.
+   */
+  renderHeldPieceViewPill() {
+    const segments = this.timeline.segments;
+    if (!this.face || segments.length !== 1 || S.isClip(segments[0])) return [];
+    const holds = this.pieceHolds();
+    if (!holds.length) return [];
+    return [el("button", {
+      class: "mmc-pill mmc-piece-toggle on",
+      "aria-pressed": "true",
+      disabled: true,
+      title: t("Showing the whole piece. The shot face has no place for {fields}, "
+             + "so the way back opens when they are emptied.",
+             { fields: holds.join(" · ") }),
+    }, [icon("timeline", 16), el("span", { text: t("Timeline") })])];
   }
 
   /**

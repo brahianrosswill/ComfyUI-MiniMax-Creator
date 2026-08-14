@@ -4,10 +4,39 @@ Write a sentence, attach your media with `@`, press Run. One node holds the whol
 generation and hands back a finished clip with its sound already in it — no
 conditioning sockets, no sampler to re-assemble, no VAE to remember to connect.
 
+Write a second shot on it and the same node is a timeline.
+
 Local open weights only, through core's `comfy_extras/nodes_minimax_h3.py`. No API
 key, nothing uploaded.
 
 ![Sampling, then the finished clip playing beside the node](docs/img/preview.gif)
+
+## What is new in 2.0
+
+If you already have this pack installed, the headline is that there is one node
+now instead of two. Update, restart, open your workflows — they load and render
+the same. Nothing about a saved piece has to be redone; see
+[Upgrading from the two-node version](#upgrading-from-the-two-node-version) for
+what happens to a Timeline node you already placed.
+
+- **One node, one shot or twenty.** The Creator grew the strip rather than
+  handing it to a second node. **Write the next shot** under the prompt turns the
+  face into a timeline; deleting cards back down to one brings the shot back.
+  A Creator render always was a one-segment timeline underneath — the split only
+  ever lived in the UI.
+- **Two flow clocks on the sampler row.** H3 samples picture and sound on
+  separate schedules, and the row now carries both as **shift** pills. They ship
+  hidden (Settings → **Nodes**) because most rows never leave the checkpoints'
+  own 12/3, at which no shift node is emitted at all; a value off that schedule
+  shows its pill regardless. **turbo** presets them to what the LoRA family it
+  engages was distilled against, and puts them back on release.
+- **Three cache implementations on one pill.** FirstBlockCache and TeaCache from
+  the community, plus core's own EasyCache, which needs nothing installed. One
+  cache at a time.
+- **References citable in the PreStage prompt.** `@ref-2` becomes `Picture 2` —
+  the label core's Qwen-edit encoder writes in front of that slot.
+- **The render overlay counts passes**, not segments — *Pass 3 of 5* — matching
+  what the strip calls them.
 
 ## The node
 
@@ -19,6 +48,17 @@ resolution and the sampler. The badge on the right (`REF2VA → Ref2VA`) tells y
 which checkpoint this render will land on.
 
 That is the whole workflow. Drop the node, type, run.
+
+Under the prompt there is a stretch of unexposed film — **Write the next shot**.
+Click it and the piece has two shots instead of one, the strip opens on the new
+one, and the node's face becomes the timeline described [below](#more-than-one-shot).
+Delete cards back down to one and the face comes back. There is no mode to pick:
+one shot or twenty, it is the same node and the same blob.
+
+The **Timeline** pill shows the piece without adding a shot — the standing prompt
+every shot inherits, the reference pool, and the LoRAs patched onto all of them.
+Click it again to go back to the shot. It is a view, not a setting: nothing about
+the render changes, and the choice is saved with the node rather than in the blob.
 
 ## Install
 
@@ -59,6 +99,14 @@ and picking one without the pack refuses up front naming it.
 > reconstruction. The weights pill will not auto-fill it as a video VAE, but it
 > will let you pick it, so read the filename.
 
+Two machine notes. fp8 checkpoints only *speed up* sampling on cards with
+hardware fp8 matmul (RTX 40-series and later); on older cards they still halve
+the memory and change nothing else. And recent ComfyUI streams weights with
+Dynamic VRAM by default — if a long render dies with a
+`HostBuffer.read_file_slice` CUDA OOM, start ComfyUI with
+`--disable-dynamic-vram` (a known core regression as of August 2026,
+[#15255](https://github.com/Comfy-Org/ComfyUI/issues/15255)).
+
 ## Attaching things
 
 Type `@` anywhere in the prompt. The menu lists what is already attached first, then
@@ -76,7 +124,7 @@ made can go straight back in as a reference.
 **Gallery** on the rail opens straight onto that tab. It is the same picker, so
 renders organize exactly like input files do: make a shelf, drag thumbnails onto
 it, star the keepers, and use **Organize** to move or delete in bulk. Stills and
-finished clips arrive on separate shelves, because the two nodes write to
+finished clips arrive on separate shelves, because videos and stills write to
 separate folders — see below.
 
 Every attachment gets a colour and its chip in the sentence wears the same one, so
@@ -104,6 +152,11 @@ you want for a voice, a room tone, or scoring that happens to live in an mp4.
 Reference *images* get a scope dial instead: `full · person · object · scene ·
 style`. On `person`, "her from @img-1" stops dragging that image's background,
 palette and pose along with the face.
+
+The PreStage's style references are cited the same way. Writing `@ref-2` becomes
+`Picture 2` — the label core's Qwen-edit encoder writes in front of that slot, so
+it is the name the model is actually reading. Which slot a reference gets is the
+payload's to decide, not yours to count.
 
 ## LoRAs
 
@@ -137,8 +190,13 @@ re-reads everything, which is what to press after editing a sidecar by hand.
 
 **turbo** on the sampler row is a switch, not a preset: it adds a distillation LoRA
 (larryvrh's `minimax_h3_turbo_v4_step600_ema`, the lightx2v 4-step distill, or
-Kijai's conversions), moves the sampler to euler + beta, and drops the steps to
-4 / 6 / 8. Switching it off puts all of it back.
+Kijai's conversions), moves the sampler to euler + beta, drops the steps to
+4 / 6 / 8, and sets the two **shift** pills to the schedule the picked LoRA's
+card was distilled against (the lightx2v distill runs the video clock at 6;
+larryvrh's keeps the checkpoints' own 12/3). Switching it off puts all of it
+back. The shift pills are ordinary controls the rest of the time — H3 samples
+picture and sound on two flow clocks, and at the default 12/3 the graph carries
+no shift node at all.
 
 ## Refine
 
@@ -184,7 +242,7 @@ fine-tuned to turn a single temporal latent into a picture while its encoder was
 left frozen. That is why one file does both jobs here: the encoder that reads your
 references is still the stock H3 one, bit for bit.
 
-The body is the Creator's, because the request is a Creator's — nine reference
+The body is the shot editor's, because the request is a shot's — nine reference
 images, three clips, three sounds, a start frame, an end frame, LoRAs, `@`
 mentions, FL2VA/Ref2VA routing, the taeh3 preview. Two pills are its own:
 
@@ -197,15 +255,16 @@ Reconstruction is soft compared to a dedicated image model: fine text, thin
 contours and hair are where it shows first. It is an experiment, marked as one in
 the UI, and the video VAE is not a substitute for it in either direction.
 
-## Timeline
+## More than one shot
 
-A second node for a clip made of several shots. Each card is a whole generation —
-its own prompt, references and LoRAs, edited in the same editor the Creator uses.
+Past one shot the node's face becomes the piece at a glance: the global prompt,
+the shots as a lane strictly proportional to their durations, and the numbers.
+Each card is a whole generation — its own prompt, references and LoRAs, edited in
+the same editor the single-shot face is.
 
-![The Timeline node](docs/img/timeline-node.png)
+![The node with a strip on it](docs/img/timeline-node.png)
 
-The lane in the node body is strictly proportional to the durations. The strip
-inside the modal is where the work happens.
+**Edit timeline** opens the strip, which is where the work happens.
 
 ![The Timeline strip](docs/img/timeline.png)
 
@@ -246,10 +305,29 @@ and a reference image can be narrowed (*person*, *object*, *scene*, *style*) so
 a sheet contributes the likeness without its background. In one pass, all
 citations of the same piece reference share a single `<Picture N>`.
 
-While a chained timeline renders, the preview overlay names the segment the
-sampler is on — *Segment 3 of 5* — so a long strip's step count finally says
-where in the piece you are. Cached segments are skipped, so the chip always
-names the segment actually being made.
+While a chained piece renders, the preview overlay names the pass the sampler is
+on — *Pass 3 of 5* — so a long strip's step count finally says where in the piece
+you are. Cached segments are skipped, so the chip always names the segment
+actually being made.
+
+### Upgrading from the two-node version
+
+Through 1.x the Creator and the Timeline were two nodes. As of 2.0 they are one
+— a Creator render was always a one-segment timeline underneath, and the split
+only ever lived in the UI.
+
+Nothing to do, and nothing to migrate. Saved 1.x workflows keep working:
+
+- A **Creator** node opens exactly as it did, on the shot you wrote. Its blob is
+  read as the one-shot piece it always was.
+- A **Timeline** node keeps its own id, which is deprecated rather than removed:
+  it is gone from the node search, it still loads, and it mounts the same body.
+  Only the title on the canvas differs. Copy the JSON into a fresh Creator and
+  delete it if you would rather not keep one around.
+
+The blob's shape is the timeline's either way — a global prompt, one canvas, one
+set of weights and a list of segments — so the right-click **Copy creator_data
+JSON** now hands you a piece rather than a lone request.
 
 ## Modes and duration
 
@@ -299,7 +377,7 @@ Folders** sets where — one answer per machine, for every node in the pack:
 
 | | default | lands in |
 |---|---|---|
-| Creator / Timeline | `minimax/renders/H3` | `output/minimax/renders/H3_00001_.mp4` |
+| Creator | `minimax/renders/H3` | `output/minimax/renders/H3_00001_.mp4` |
 | PreStage | `minimax/stills/prestage` | `output/minimax/stills/prestage_00001_.png` |
 
 The last segment names the **files**, not a folder: `client-a/hero` writes
@@ -338,7 +416,7 @@ This is **not** saved into the workflow. A `.json` shared with someone else make
 the same shot at whatever quality their ComfyUI is set to, which is the same
 split as the folder pill above: where a file lands is part of the piece, how many
 megabytes it takes is not. The value lives in `user/minimax_creator.settings.json`
-and applies to the Creator and the Timeline. PreStage stills are PNG and have
+and applies to every video the Creator writes. PreStage stills are PNG and have
 nothing to set.
 
 Needs ComfyUI 0.29 or newer, which is where `crf` reached core's video writer.
@@ -394,9 +472,14 @@ This pack is glue. The work underneath it belongs to other people:
 - **[Comfy Org](https://github.com/comfyanonymous/ComfyUI)** — H3 lives in core;
   this node only drives it.
 - **[ComfyUI-Spectrum-MiniMax-H3](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3)**
-  by xmarre and
+  by xmarre,
   **[ComfyUI-MiniMaxH3-FirstBlockCache](https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache)**
-  by duckyshell — the two accelerator pills on the sampler row.
+  by duckyshell and
+  **[ComfyUI-MiniMaxH3-TeaCache](https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache)**
+  by Icyoung — the accelerator pills on the sampler row. The cache pill also
+  offers core's own EasyCache (`easy`), which needs nothing installed. One
+  cache at a time; all of them trade fidelity for speed, so A/B against a
+  native render before trusting one on a final piece.
 - **[ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)** by Kijai — gives the
   live preview a real decoder. Kijai's turbo conversions are in the switch too.
 - **[ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU)** by pollockjj —
@@ -428,6 +511,7 @@ python3 tests/test_refine.py
 python3 tests/test_outputs.py         # what an output prefix may be
 python3 tests/test_settings.py        # what the settings file may hold
 python3 tests/test_canvas_mirror.py   # canvas.js against canvas.py
+python3 tests/test_piece_mirror.py    # an old creator_data blob lifts to one shot
 python3 tests/test_prestage_mirror.py
 python3 tests/test_outputs_mirror.py  # outputs.js against outputs.py
 python3 tests/test_js_bodies.py       # the frontend loads and every node body mounts

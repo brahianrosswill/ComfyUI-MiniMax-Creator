@@ -35,12 +35,7 @@ def _load():
 skill = _load()
 refine = sys.modules["mmc.refine"]
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def expect_error(label, fn, fragment):
@@ -162,9 +157,4 @@ expect_error("an empty reply is an error", lambda: skill.parse_reply("<think>onl
 
 shutil.rmtree(tmp, ignore_errors=True)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  " + failure)
-    sys.exit(1)
-print("ok")
+passed("ok")

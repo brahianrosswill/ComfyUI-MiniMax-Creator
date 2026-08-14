@@ -7,18 +7,10 @@ export const css = `
 
 /* A plain textarea, not the contenteditable PromptBox: an image prompt has no
    @-handles to chip. Dressed exactly like the timeline's prompt box. */
-.mmc-prestage-prompt {
-  width: 100%; box-sizing: border-box; min-height: 96px; resize: vertical;
-  background: var(--mmc-surface); border: 1px solid var(--mmc-line); border-radius: 14px;
-  color: var(--mmc-text); font-family: inherit; font-size: 14px; line-height: 1.5;
-  padding: 14px 16px; outline: none;
-}
-/* In the window it has the room, so it takes a paragraph's worth of it — the
-   window scrolls around it rather than the box stretching to whatever is in it,
-   which is the same bargain the Creator's box takes there. */
-.mmc-editor-sheet-body .mmc-prestage-prompt { min-height: 40vh; }
-.mmc-prestage-prompt:focus { border-color: rgba(255,255,255,.2); }
-.mmc-prestage-prompt::placeholder { color: var(--mmc-off); }
+/* The prompt is the Creator's box now — see prestage.js — so it wears the
+   editor's own rules and the panel around it is its frame. What was here was a
+   textarea's skin: its own border, background and padding, which the panel
+   already draws. */
 
 /* The spawn pill. On, it wears the accent the continue pill wears — the
    pre-stage is part of this shot now, which is a stronger statement than the

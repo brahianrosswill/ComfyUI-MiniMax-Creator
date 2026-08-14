@@ -61,12 +61,7 @@ except Exception as exc:  # noqa: BLE001
     print(f"skipped: ComfyUI not importable ({type(exc).__name__}: {exc})")
     sys.exit(0)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def close(label, got, want, tol):
@@ -199,9 +194,4 @@ expect_error("a trim past the end says so",
 
 os.remove(CLIP)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for line in FAILURES:
-        print(f"  - {line}")
-    sys.exit(1)
-print("all decode-window tests passed")
+passed("all decode-window tests passed")

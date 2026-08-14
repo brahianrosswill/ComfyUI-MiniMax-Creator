@@ -35,12 +35,7 @@ for name in ("outputs", "settings"):
     spec.loader.exec_module(module)
 settings = sys.modules["mmcpkg.settings"]
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 def refuses(label, raw, fragment):
@@ -71,6 +66,16 @@ check("an unknown key is dropped", sorted(settings.clean({"nonsense": 1})),
       sorted(settings.DEFAULTS))
 
 refuses("a value off the encoder's scale", {"video_crf": 99}, "between")
+
+# The shift pills' visibility. A strict boolean: `1` and `"true"` are refused
+# rather than coerced, so the file never holds a value the page's two radio
+# rows cannot show back.
+check("the shift pills are hidden by default", settings.clean({})["show_shift_pills"], False)
+check("showing the shift pills is kept",
+      settings.clean({"show_shift_pills": True})["show_shift_pills"], True)
+check("a null shift-pill setting is the default",
+      settings.clean({"show_shift_pills": None})["show_shift_pills"], False)
+refuses("a shift-pill setting that is not a boolean", {"show_shift_pills": 1}, "true or false")
 
 # The output folders. `outputs.clean` is the authority — this only has to show
 # that the setting is held to it, so a prefix that would be refused at the end
@@ -130,10 +135,3 @@ with tempfile.TemporaryDirectory() as directory:
 # existed: turning the page on must not change anybody's files.
 check("the default is what the encoder would have picked anyway",
       settings.DEFAULT_CRF, 23)
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all settings tests passed")

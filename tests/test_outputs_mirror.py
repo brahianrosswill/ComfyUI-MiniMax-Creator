@@ -69,7 +69,7 @@ if proc.returncode != 0:
     sys.exit(1)
 mirror = json.loads(proc.stdout)
 
-FAILURES = []
+from harness import FAILURES, passed
 
 
 def check(label, got, want):
@@ -94,9 +94,4 @@ for raw in CASES:
 check("folderOf splits at the last separator", mirror["folders"], {"a/b/c": "a/b", "abc": ""})
 check("stemOf is the rest", mirror["stems"], {"a/b/c": "c", "abc": "abc"})
 
-if FAILURES:
-    print(f"{len(FAILURES)} mismatch(es) between outputs.js and outputs.py:")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"outputs.js mirrors outputs.py across {len(CASES)} prefixes")
+passed(f"outputs.js mirrors outputs.py across {len(CASES)} prefixes")

@@ -20,12 +20,7 @@ spec = importlib.util.spec_from_file_location("mmc_outputs", os.path.join(ROOT, 
 outputs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(outputs)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def refuses(label, raw, fragment):
@@ -98,9 +93,4 @@ check("a blob's key is used", outputs.video({"output_prefix": "shots/a"}), "shot
 check("the two defaults are different folders",
       outputs.VIDEO_PREFIX.rsplit("/", 1)[0] != outputs.IMAGE_PREFIX.rsplit("/", 1)[0], True)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all output-prefix tests passed")
+passed("all output-prefix tests passed")

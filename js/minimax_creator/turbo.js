@@ -111,12 +111,23 @@ function throwOn(container, { value, set }) {
       steps: Number(value("steps", S.TURBO_RESET.steps)),
       sampler_name: String(value("sampler_name", S.TURBO_RESET.sampler_name)),
       scheduler: String(value("scheduler", S.TURBO_RESET.scheduler)),
+      shift_video: Number(value("shift_video", S.TURBO_RESET.shift_video)),
+      shift_audio: Number(value("shift_audio", S.TURBO_RESET.shift_audio)),
     };
   }
   turbo.on = true;
   set("steps", S.TURBO_STEPS[turbo.quality] ?? S.TURBO_STEPS.medium);
   set("sampler_name", S.TURBO_SAMPLER);
   set("scheduler", S.TURBO_SCHEDULER);
+  // The flow shifts the picked family's card was distilled against — part of
+  // the same contract as the step count, so they are thrown and released with
+  // the row. Merged-checkpoint mode keeps the row's own values: the schedule
+  // is the checkpoint's business and the user picked it.
+  if (turbo.lora) {
+    const preset = S.turboPreset(turbo.lora);
+    set("shift_video", preset.shift_video);
+    set("shift_audio", preset.shift_audio);
+  }
 }
 
 function throwOff(container, { set }, { removeEntry = true } = {}) {
@@ -126,6 +137,8 @@ function throwOff(container, { set }, { removeEntry = true } = {}) {
   set("steps", saved.steps);
   set("sampler_name", saved.sampler_name);
   set("scheduler", saved.scheduler);
+  set("shift_video", saved.shift_video ?? S.TURBO_RESET.shift_video);
+  set("shift_audio", saved.shift_audio ?? S.TURBO_RESET.shift_audio);
   turbo.on = false;
   turbo.saved = null;
 }
@@ -290,11 +303,13 @@ export function turboRow({ container, widgetIO, onChange }) {
     el("button", {
       class: `mmc-weight-file${turbo.lora ? "" : " empty"}`,
       title: t("The distillation LoRA the turbo pill engages, from models/loras.\n\n"
-           + "larryvrh's v4 EMA runs at strength 1.0; the lightx2v distill at about 0.6 — "
-           + "the switch sets that from the filename, and the LoRA manager's slider "
-           + "overrides it. Steps and sampler are the pill's business, not this row's.\n\n"
+           + "larryvrh's v4 EMA runs at strength 1.0 on the checkpoints' own schedule; "
+           + "the lightx2v distill at about 0.6 with the video shift at 6 — the switch "
+           + "sets both from the filename, the LoRA manager's slider and the shift pills "
+           + "override them. Steps and sampler are the pill's business, not this row's.\n\n"
            + "'none' also fits a checkpoint with the distillation merged into the weights: "
-           + "the pill then only drops the steps and swaps the sampler."),
+           + "the pill then only drops the steps and swaps the sampler, and the schedule "
+           + "stays whatever the row says."),
       text: turbo.lora || (turbo.merged ? t("no LoRA · merged checkpoint") : t("not set")),
       onclick: (event) => openTurboChoice(event.currentTarget, {
         includeNone: true,

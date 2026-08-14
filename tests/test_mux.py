@@ -62,15 +62,10 @@ except Exception as exc:  # noqa: BLE001
 SPILLS = tempfile.mkdtemp(prefix="mmc-spill-")
 spill.directory = lambda: SPILLS
 
-FAILURES = []
+from harness import FAILURES, check, passed
 FPS = 24
 RATE = 48000
 WIDTH, HEIGHT = 64, 48
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
 
 
 def close(label, got, want, slack):
@@ -307,7 +302,4 @@ large = os.path.getsize(written(noisy, crf=8)[3])
 if not small < large:
     FAILURES.append(f"crf changes nothing: crf 40 wrote {small} bytes, crf 8 wrote {large}")
 
-if FAILURES:
-    print("\n".join(FAILURES))
-    sys.exit(1)
-print("all mux tests passed — reels written and read back")
+passed("all mux tests passed — reels written and read back")

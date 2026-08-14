@@ -54,14 +54,14 @@ except Exception as exc:  # noqa: BLE001
     sys.exit(0)
 
 tl = importlib.import_module(f"{PACKAGE}.timeline")
+# The user-facing node moved to `creator_node` when the Creator and the Timeline
+# became one. This id is the retired one, kept loadable for saved workflows, and
+# it runs the same body — so it is still the right thing to drive these through.
+cn = importlib.import_module(f"{PACKAGE}.creator_node")
+accel_mod = importlib.import_module(f"{PACKAGE}.accel")
 outputs_mod = importlib.import_module(f"{PACKAGE}.outputs")
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 def expect_error(label, fn, fragment):
@@ -116,14 +116,14 @@ def build(data=DATA, **overrides):
     # and not the plain names.
     from comfy_api.latest import io as comfy_io
 
-    previous = tl.MiniMaxH3Timeline.hidden
-    tl.MiniMaxH3Timeline.hidden = comfy_io.HiddenHolder(
+    previous = cn.MiniMaxH3Timeline.hidden
+    cn.MiniMaxH3Timeline.hidden = comfy_io.HiddenHolder(
         unique_id=NODE_ID, prompt=None, extra_pnginfo=None, dynprompt=None,
         auth_token_comfy_org=None, api_key_comfy_org=None)
     try:
-        return tl.MiniMaxH3Timeline.execute(**kwargs)
+        return cn.MiniMaxH3Timeline.execute(**kwargs)
     finally:
-        tl.MiniMaxH3Timeline.hidden = previous
+        cn.MiniMaxH3Timeline.hidden = previous
 
 
 def without(field, data=DATA):
@@ -165,6 +165,22 @@ check("frames are read back only where a seam needs them",
       len(by_type["MiniMaxH3PassFrames"]), 1)
 check("no negative connected means one zero-out per segment",
       len(by_type["ConditioningZeroOut"]), 3)
+
+# The flow shifts. At the checkpoints' own schedule no node is emitted at all,
+# so an untouched row builds the same graph it always has; off it, one shift
+# node patches each pass's model on its way to the sampler.
+check("the default schedule emits no shift node", "MiniMaxH3SigmaShift" in by_type, False)
+shifted = {}
+for node_id, node in build(shift_video=6.0).expand.items():
+    shifted.setdefault(node["class_type"], []).append((node_id, node["inputs"]))
+check("an off-default video shift emits one shift node per generation",
+      len(shifted.get("MiniMaxH3SigmaShift", [])), 3)
+check("...carrying both clocks",
+      {(i["shift_video"], i["shift_audio"]) for _, i in shifted.get("MiniMaxH3SigmaShift", [])},
+      {(6.0, 3.0)})
+shift_ids = {node_id for node_id, _ in shifted.get("MiniMaxH3SigmaShift", [])}
+check("each sampler runs on the shifted model",
+      all(i["model"][0] in shift_ids for _, i in shifted.get("KSampler", [])), True)
 
 def in_order(nodes, order):
     """The segment nodes sorted by which of `order`'s prompts they carry."""
@@ -612,10 +628,16 @@ class _FakeVae:
 
 guides = encoder_mod._context_keyframes(_FakeVae(7), _torch.zeros(22, 64, 64, 3), 22)
 check("22 frames become 7 per-step guide blocks", len(guides), 7)
-check("every block passes the stock constructor a legal anchor",
-      {g["resolved_frame_index"] for g in guides}, {0})
-check("the real positions follow the (1,4,4,4,4) temporal grid",
-      [g[payload_mod.FRAME_INDEX_KEY] for g in guides], [0, 1, 5, 9, 13, 17, 18])
+if payload_mod.CORE_ANCHORS_ANYWHERE:
+    check("every block anchors natively on the (1,4,4,4,4) temporal grid",
+          [g["resolved_frame_index"] for g in guides], [0, 1, 5, 9, 13, 17, 18])
+    check("no block carries the old-core repositioning key",
+          any(payload_mod.FRAME_INDEX_KEY in g for g in guides), False)
+else:
+    check("every block passes the stock constructor a legal anchor",
+          {g["resolved_frame_index"] for g in guides}, {0})
+    check("the real positions follow the (1,4,4,4,4) temporal grid",
+          [g[payload_mod.FRAME_INDEX_KEY] for g in guides], [0, 1, 5, 9, 13, 17, 18])
 try:
     encoder_mod._context_keyframes(_FakeVae(6), _torch.zeros(22, 64, 64, 3), 22)
     FAILURES.append("a coverage mismatch should refuse to render, got no error")
@@ -719,7 +741,7 @@ check("...and the tail of its sound",
 # the arguments; these cover the edge that only exists in the built graph.
 
 check("no accelerator nodes by default",
-      [t for t in by_type if t in (tl.accel.BLOCK_CACHE_NODE, tl.accel.SPECTRUM_NODE)], [])
+      [t for t in by_type if t in (accel_mod.BLOCK_CACHE_NODE, accel_mod.SPECTRUM_NODE)], [])
 
 # Every KSampler must read straight off its own segment node when nothing is on.
 segments_by_id = {node_id for node_id, _ in by_type["MiniMaxH3TimelineSegment"]}
@@ -740,7 +762,7 @@ class _FakePack:
 
 
 _restore = dict(comfy_nodes.NODE_CLASS_MAPPINGS)
-comfy_nodes.NODE_CLASS_MAPPINGS[tl.accel.BLOCK_CACHE_NODE] = _FakePack
+comfy_nodes.NODE_CLASS_MAPPINGS[accel_mod.BLOCK_CACHE_NODE] = _FakePack
 try:
     accel_graph = build(block_cache="fast").expand
     accel_by_type = {}
@@ -751,7 +773,7 @@ try:
     # carry over and comparing against it is how this silently tests nothing.
     accel_segment_ids = {node_id for node_id, _ in accel_by_type["MiniMaxH3TimelineSegment"]}
 
-    patches = accel_by_type.get(tl.accel.BLOCK_CACHE_NODE, [])
+    patches = accel_by_type.get(accel_mod.BLOCK_CACHE_NODE, [])
     check("one accelerator patch per segment", len(patches), 3)
     check("the patch is the pack's chosen preset",
           sorted({i["mode"] for _, i in patches}), ["H3 Fast — 0.10"])
@@ -905,10 +927,3 @@ expect_error("a clip cannot be merged into a pass",
              lambda: with_clip({"prompt": "a", "duration_s": 5},
                                {**CLIP, "merge": True}),
              "cannot share a generation")
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all timeline graph tests passed")

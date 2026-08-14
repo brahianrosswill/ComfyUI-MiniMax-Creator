@@ -32,6 +32,43 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# ---- the stylesheet is one template literal per file ------------------------
+#
+# Every module under js/minimax_creator/styles/ is `export const css = ` and then
+# the whole stylesheet, so one stray backtick — in a comment, around a property
+# name, anywhere — closes the literal early and the rest of the file parses as
+# JavaScript. What that costs is not the rule: it is the module, and with it the
+# extension, and with that every node body on the canvas.
+#
+# The run below already catches it, as an import stack twenty frames deep with
+# nothing in it about backticks. This says which file and which line.
+
+STYLES = os.path.join(ROOT, "js", "minimax_creator", "styles")
+stray = []
+for name in sorted(os.listdir(STYLES)):
+    if not name.endswith(".js"):
+        continue
+    inside = False
+    with open(os.path.join(STYLES, name), encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            # The header comment above the literal says the rule and so contains
+            # the very characters it is about. Only what is inside counts.
+            if line.strip() == "export const css = `":
+                inside = True
+                continue
+            if line.strip() == "`;":
+                inside = False
+                continue
+            if inside and ("`" in line or "${" in line):
+                stray.append(f"{name}:{number}: {line.strip()[:70]}")
+if stray:
+    print("a stylesheet has a backtick or ${} outside its delimiters — the module "
+          "will not parse:")
+    for line in stray:
+        print("  -", line)
+    sys.exit(1)
+
+
 if shutil.which("node") is None:
     print("skipped: node is not installed")
     sys.exit(0)
@@ -69,10 +106,29 @@ class Node {
   remove() {}
   normalize() {}
   contains() { return false; }
+  /** Enough of a selector match for `PromptBox.claim`, which asks whether a
+   *  click landed on something that answers for itself. Tag names and single
+   *  class names only — the one selector it is given is a list of those. */
+  matches(selector) {
+    return selector.split(",").map((s) => s.trim()).some((one) => {
+      if (one.startsWith(".")) return String(this.className).split(" ").includes(one.slice(1));
+      if (one.startsWith("[")) return one.slice(1, -1) in this.attrs;
+      return this.tagName?.toLowerCase() === one;
+    });
+  }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matches?.(selector)) return node;
+      node = node.parent;
+    }
+    return null;
+  }
+  focus() { globalThis.document.activeElement = this; }
+  blur() { if (globalThis.document.activeElement === this) globalThis.document.activeElement = null; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
   getBoundingClientRect() { return { top: 0, left: 0, width: 100, height: 100, bottom: 0, right: 0 }; }
-  focus() {}
   scrollIntoView() {}
   get firstChild() { return this.children[0] ?? null; }
   get childNodes() { return this.children; }
@@ -169,20 +225,34 @@ const fakeNode = (comfyClass, widgetName, blob) => ({
   properties: {},
 });
 
+// The two piece ids are one node now, so what a body wears is decided by the
+// piece and not by which id was dropped: one shot gets that shot's editor, and
+// a strip gets the strip's summary. Both are driven here, under the id a saved
+// workflow would carry them under.
+const ONE_SHOT = JSON.stringify({
+  version: 2, prompt: "", models: {},
+  segments: [{ prompt: "", assets: [], loras: [], duration_s: 6 }],
+});
+const A_STRIP = JSON.stringify({
+  version: 2, prompt: "", models: {},
+  segments: [{ prompt: "shot 1", assets: [], loras: [], duration_s: 5 },
+             { prompt: "shot 2", assets: [], loras: [], duration_s: 5 }],
+});
+
 for (const [cls, widget, blob] of [
-  ["MiniMaxH3Creator", "creator_data", "{}"],
-  ["MiniMaxH3Timeline", "timeline_data", "{}"],
+  ["MiniMaxH3Creator", "creator_data", ONE_SHOT],
+  ["MiniMaxH3Timeline", "timeline_data", A_STRIP],
   ["MiniMaxH3PreStage", "prestage_data", "{}"],
   ["MiniMaxH3PreStage", "prestage_data", JSON.stringify({ arch: "minimax" })],
 ]) {
   const node = fakeNode(cls, widget, blob);
   try {
     await ext.nodeCreated(node);
-    const key = cls + (blob === "{}" ? "" : " (H3 still)");
+    const key = cls + (cls === "MiniMaxH3PreStage" && blob !== "{}" ? " (H3 still)" : "");
     out.nodes[key] = { mounted: !!node.mmcBody && !!node.dom,
                        body: node.mmcBody?.editor?.constructor.name
                           ?? node.mmcBody?.constructor.name };
-    if (blob !== "{}") out.still = node.mmcBody.root.text;
+    if (cls === "MiniMaxH3PreStage" && blob !== "{}") out.still = node.mmcBody.root.text;
     if (cls === "MiniMaxH3Creator") out.creator = node.mmcBody.root.text;
   } catch (error) {
     out.errors.push(`${cls}: ${error.message}`);
@@ -258,28 +328,52 @@ try {
   out.errors.push(`clip card: ${error.message}`);
 }
 
-// A new timeline has nothing on it.
+// A piece cannot be empty.
 //
-// The strip used to open as one empty shot, which is what made every piece
-// begin with a generation: the card was there before the user chose anything
-// and could not be deleted while it was the only one. Now both renders have to
-// answer for a strip with no cards at all — every accessor that walks the
-// segments, the lane the node draws them in, and the two tiles that are the
-// only thing on the strip.
+// The strip could hold no cards at all while it was a node of its own, and the
+// two ways to begin one were the whole of what it showed. Under one node that
+// state is a dead end: it is reached by deleting cards, and what it leaves is a
+// summary reporting nothing with a button that opens a strip holding nothing.
+// So a piece is at least one shot, and clearing the last card blanks it instead
+// — from a blob that says otherwise, from a fresh node, and from the delete.
 try {
   const node = fakeNode("MiniMaxH3Timeline", "timeline_data", "{}");
   await ext.nodeCreated(node);
   const body = node.mmcBody;
   const { openTimeline: openTimelineModal } = await import("./js/minimax_creator/timeline.js");
-  openTimelineModal({ timeline: body.timeline, onCommit: () => body.commit() });
-  await new Promise((done) => setTimeout(done, 0));
-  const modal = document.body.children.at(-1);
   out.empty = {
+    // An empty blob opens as one blank shot, which is the Creator's own default.
     cards: body.timeline.segments.length,
-    node: body.root.text,
-    modal: modal.text,
-    // ...and it still redraws once something is added, which is the path every
-    // new piece takes on its first click.
+    // ...and writes one back. Committed first on purpose: the widget still holds
+    // the blob it was given until something commits, so reading it before that
+    // would be reading the input rather than what the node now holds.
+    written: (() => { body.commit(); return JSON.parse(body.read()).segments.length; })(),
+    wears: body.editor ? "shot" : "strip",
+    // ...and one written to hold none does too.
+    fromEmptyList: (() => {
+      const other = S.parseTimeline(JSON.stringify({ version: 2, segments: [] }));
+      return other.segments.length;
+    })(),
+    // Deleting down to nothing leaves a blank shot rather than an empty piece,
+    // and the face goes back to being that shot's editor.
+    cleared: await (async () => {
+      const two = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+        version: 2, prompt: "", models: {},
+        segments: [{ prompt: "shot 1", assets: [], loras: [], duration_s: 5 },
+                   { prompt: "shot 2", assets: [], loras: [], duration_s: 5 }],
+      }));
+      await ext.nodeCreated(two);
+      openTimelineModal({ timeline: two.mmcBody.timeline,
+                          onCommit: () => two.mmcBody.commit() });
+      await new Promise((done) => setTimeout(done, 0));
+      two.mmcBody.timeline.segments.splice(0, 2);
+      two.mmcBody.commit();
+      return { cards: two.mmcBody.timeline.segments.length,
+               prompt: two.mmcBody.timeline.segments[0].prompt,
+               wears: two.mmcBody.editor ? "shot" : "strip" };
+    })(),
+    // ...and the strip still redraws once something is added, which is the path
+    // every piece takes on its first click.
     added: (() => {
       body.timeline.segments.push(S.continuingSegment());
       body.commit();
@@ -335,7 +429,7 @@ try {
   click(badge());
   out.controls = {
     toSingle, backToChained,
-    route: creator.mmcBody.state.models.route,
+    route: creator.mmcBody.timeline.models.route,
     // The window has to redraw itself: the click landed on the node's editor.
     badgeMoved: badge()?.text !== before,
   };
@@ -464,9 +558,9 @@ try {
   out.errors.push(`arch switch: ${error.message}`);
 }
 
-// The settings page: two tabs now, because where files land moved off the node
-// bodies and onto this machine. Read the rendered tree rather than a screenshot
-// — what matters is that both tabs exist, the folder fields carry the stored
+// The settings page: three tabs now — how good the file is, where it goes, and
+// what the node faces offer. Read the rendered tree rather than a screenshot
+// — what matters is that the tabs exist, the folder fields carry the stored
 // prefixes, and a committed edit posts the key the server expects.
 try {
   const { openSettings } = await import("./js/minimax_creator/settings.js");
@@ -500,8 +594,209 @@ try {
   fields[0].listeners.change[0]();
   await new Promise((done) => setTimeout(done, 0));
   out.settings.posted = globalThis.__posted;
+
+  // The Nodes tab: the shift pills' visibility, read but not clicked — a click
+  // would append to __posted and muddy the folder assertion above.
+  tabButtons[2].listeners.click[0]();
+  const opts = [];
+  const findOpts = (node) => {
+    if (node.className === "mmc-opt mmc-set-opt") opts.push(node);
+    (node.children ?? []).forEach(findOpts);
+  };
+  findOpts(page);
+  out.settings.shiftRows = opts.map((o) => o.getAttribute("aria-checked"));
 } catch (error) {
   out.errors.push(`settings page: ${error.message}`);
+}
+
+// ---- the face rule ---------------------------------------------------------
+//
+// The face is the smallest one that can show everything this piece has set. One
+// segment is not enough on its own: a global prompt, a reference pool, LoRAs
+// patched onto every shot and the two audio fields all live at piece level and
+// none of them has anywhere to go on a one-shot face. A face that cannot draw a
+// field it still queues is a trap, so any of them takes the strip instead.
+//
+// Every case here is one segment. What changes is only what else is set.
+try {
+  const has = (root, cls) => {
+    let hit = false;
+    const walk = (n) => {
+      if (String(n.className ?? "").split(" ").includes(cls)) hit = true;
+      (n.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hit;
+  };
+  const shot = { prompt: "a lighthouse", assets: [], loras: [], duration_s: 6 };
+  const faceOf = async (extra) => {
+    const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+      version: 2, models: {}, segments: [{ ...shot }], ...extra,
+    }));
+    await ext.nodeCreated(node);
+    return {
+      wears: node.mmcBody.editor ? "shot" : "strip",
+      // The unexposed stretch of film that grows the piece — only ever on the
+      // one-shot face, because on a strip the way to another card is the strip.
+      grow: has(node.mmcBody.root, "mmc-tl-grow"),
+    };
+  };
+
+  out.faces = {
+    lone: await faceOf({}),
+    globalPrompt: await faceOf({ prompt: "Dawn on the estuary" }),
+    pool: await faceOf({ assets: [{ handle: "ref-1", kind: "image",
+                                    role: "reference", filename: "sheet.png" }] }),
+    globalLoras: await faceOf({ loras: [{ name: "grain.safetensors", strength: 0.8 }] }),
+    soundscape: await faceOf({ soundscape: "wind over water" }),
+    music: await faceOf({ music: "a slow piano" }),
+    twoShots: await faceOf({ segments: [{ ...shot }, { ...shot }] }),
+    // A piece of one supplied clip has no generation to put on a face at all.
+    oneClip: await faceOf({ segments: [{ kind: "clip", filename: "b-roll.mp4",
+                                         duration_s: 4 }] }),
+    // A v1 blob is a lone shot, which is the whole point of lifting one.
+    legacy: await (async () => {
+      const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+        version: 1, prompt: "a lighthouse", assets: [], loras: [], duration_s: 6,
+      }));
+      await ext.nodeCreated(node);
+      return { wears: node.mmcBody.editor ? "shot" : "strip",
+               grow: has(node.mmcBody.root, "mmc-tl-grow") };
+    })(),
+  };
+
+  // ---- the panel is the writing area ----
+  //
+  // A contenteditable is only clickable where its box is, and its box is the
+  // text's slot rather than the panel around it — so the panel's padding and
+  // the gaps between its rows looked like somewhere to write and were not.
+  // Clicking one of them now puts the caret at the end. Controls and the pill
+  // row keep their own clicks.
+  {
+    const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+      version: 2, models: {}, segments: [{ ...shot }],
+    }));
+    await ext.nodeCreated(node);
+    const first = (root, cls) => {
+      let hit = null;
+      const walk = (n) => {
+        if (!hit && String(n.className ?? "").split(" ").includes(cls)) hit = n;
+        (n.children ?? []).forEach(walk);
+      };
+      walk(root);
+      return hit;
+    };
+    const box = first(node.mmcBody.root, "mmc-prompt");
+    const panel = first(node.mmcBody.root, "mmc-panel");
+    const down = (target) => {
+      document.activeElement = null;
+      target.listeners?.pointerdown?.forEach((fn) => fn({
+        target, preventDefault() {}, stopPropagation() {},
+      }));
+      // Dispatched on the panel too, the way a real bubble would reach it.
+      if (target !== panel) {
+        panel.listeners?.pointerdown?.forEach((fn) => fn({
+          target, preventDefault() {}, stopPropagation() {},
+        }));
+      }
+      return document.activeElement === box;
+    };
+    out.claim = {
+      panelItself: down(panel),
+      // The pill row is a region of the panel that is not the writing area.
+      pills: down(first(node.mmcBody.root, "mmc-pills")),
+      // ...and so is anything that answers a click for itself.
+      aButton: down(first(node.mmcBody.root, "mmc-pill")),
+    };
+  }
+
+  // ---- the piece-view toggle ----
+  //
+  // A piece holds things a shot does not — the standing prompt, the reference
+  // pool, the LoRAs on every shot — and while it has one shot none of them has
+  // anywhere to be shown. Without a way to the strip face they would not be
+  // reachable at all: you would need a second shot before you could set the
+  // standing prompt the second shot is for.
+  const pieced = (pinned, segments) => {
+    const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+      version: 2, models: {}, segments,
+    }));
+    node.properties = pinned ? { mmc_face_piece: true } : {};
+    return node;
+  };
+  const find = (root, cls) => {
+    let hit = null;
+    const walk = (n) => {
+      if (!hit && String(n.className ?? "").split(" ").includes(cls)) hit = n;
+      (n.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hit;
+  };
+
+  const off = pieced(false, [{ ...shot }]);
+  await ext.nodeCreated(off);
+  const on = pieced(true, [{ ...shot }]);
+  await ext.nodeCreated(on);
+  const many = pieced(false, [{ ...shot }, { ...shot }]);
+  await ext.nodeCreated(many);
+
+  // Clicking it on the shot face pins the piece view; the pin is a node
+  // property rather than anything in the blob, which the render never reads.
+  const blobBefore = off.widgets.find((w) => w.name === "creator_data").value;
+  find(off.mmcBody.root, "mmc-piece-toggle")?.listeners?.click?.[0]?.();
+  out.pieceView = {
+    shotFaceOffers: !!find(off.mmcBody.root, "mmc-piece-toggle"),
+    pinnedWears: on.mmcBody.editor ? "shot" : "strip",
+    stripFaceOffersWayBack: !!find(on.mmcBody.root, "mmc-piece-toggle"),
+    // Nothing to go back to once there are two shots, so no control claiming so.
+    manyShotsHideIt: !find(many.mmcBody.root, "mmc-piece-toggle"),
+    clickPinned: off.properties.mmc_face_piece === true,
+    clickSwitchedFace: off.mmcBody.editor ? "shot" : "strip",
+    blobUntouched: off.widgets.find((w) => w.name === "creator_data").value === blobBefore,
+    // ...and clicking it again comes back, leaving the property as it found it.
+    backAgain: (() => {
+      find(on.mmcBody.root, "mmc-piece-toggle")?.listeners?.click?.[0]?.();
+      return { wears: on.mmcBody.editor ? "shot" : "strip",
+               pinGone: !("mmc_face_piece" in on.properties) };
+    })(),
+  };
+
+  // ---- and growing one into a strip ----
+  //
+  // The face must not mutate behind the user: the shot they wrote becomes card
+  // 1, a new card 2 opens for writing, and the window is what narrates it.
+  const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+    version: 2, models: {}, segments: [{ ...shot }],
+  }));
+  await ext.nodeCreated(node);
+  const before = document.body.children.length;
+  const grow = (() => {
+    let hit = null;
+    const walk = (n) => {
+      if (!hit && String(n.className ?? "").split(" ").includes("mmc-tl-grow")) hit = n;
+      (n.children ?? []).forEach(walk);
+    };
+    walk(node.mmcBody.root);
+    return hit;
+  })();
+  grow?.listeners?.click?.[0]?.();
+  await new Promise((done) => setTimeout(done, 0));
+  out.grew = {
+    cards: node.mmcBody.timeline.segments.length,
+    // The shot that was on the face is card 1, untouched. Promoting its text to
+    // the piece's standing prompt would change what card 2 generates.
+    firstKept: node.mmcBody.timeline.segments[0].prompt,
+    piecePromptStillEmpty: !(node.mmcBody.timeline.prompt || "").trim(),
+    // The new card opens the way appending to the strip already opens one.
+    secondContinues: node.mmcBody.timeline.segments[1].continue === true,
+    // The strip arrived, rather than the face quietly becoming a summary.
+    windowOpened: document.body.children.length > before,
+    // ...and the face has changed by the time it is closed.
+    faceNow: node.mmcBody.editor ? "shot" : "strip",
+  };
+} catch (error) {
+  out.errors.push(`face rule: ${error.message}`);
 }
 
 console.log(JSON.stringify(out));
@@ -534,12 +829,7 @@ if result.returncode != 0:
     sys.exit(1)
 
 report = json.loads(result.stdout.strip().splitlines()[-1])
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 FAILURES.extend(report["errors"])
@@ -548,9 +838,14 @@ check("the extension registers", report["registered"], "minimax.creator")
 # Each node's body, and which editor drives it. The H3 pre-stage is the one that
 # differs: its still is a video generation, so it is driven by the Creator's own
 # body rather than by the image-model editor beside it.
-check("the Creator mounts", report["nodes"].get("MiniMaxH3Creator"),
+#
+# The two piece ids mount the same body and differ only in what the blob says:
+# one shot wears that shot's editor, a strip wears the strip's summary. Driven
+# under both ids because a saved workflow may carry either.
+check("a piece of one shot wears that shot's editor",
+      report["nodes"].get("MiniMaxH3Creator"),
       {"mounted": True, "body": "CreatorEditor"})
-check("the Timeline mounts", report["nodes"].get("MiniMaxH3Timeline"),
+check("a piece of several wears the strip", report["nodes"].get("MiniMaxH3Timeline"),
       {"mounted": True, "body": "TimelineBody"})
 check("the image pre-stage mounts", report["nodes"].get("MiniMaxH3PreStage"),
       {"mounted": True, "body": "PreStageEditor"})
@@ -572,11 +867,15 @@ for unwanted in ("Settings", " s ", "sweep"):
         FAILURES.append(f"the H3 still's body should not carry {unwanted!r}")
 check("the Creator keeps the settings tool", "Settings" in (report["creator"] or ""), True)
 
-# The settings page owns two questions now — how good the file is, and where it
-# goes — so it has two tabs, and the folder fields are the only place the
-# prefixes can be set.
+# The settings page owns three questions now — how good the file is, where it
+# goes, and what the node faces offer — so it has three tabs, and the folder
+# fields are the only place the prefixes can be set.
 settings = report.get("settings", {})
-check("the settings page has both tabs", settings.get("tabs"), ["Quality", "Folders"])
+check("the settings page has all three tabs", settings.get("tabs"),
+      ["Quality", "Folders", "Nodes"])
+# The shift pills ship hidden: the Nodes tab's two rows are Hidden then Shown,
+# and Hidden is the one checked on a fresh settings file.
+check("the shift pills are hidden by default", settings.get("shiftRows"), ["true", "false"])
 check("the quality tab shows the encoder value", settings.get("quality"), True)
 check("the folders tab carries both stored prefixes", settings.get("fields"),
       ["minimax/renders/H3", "minimax/stills/prestage"])
@@ -610,17 +909,76 @@ for wanted in ("Add image", "Add video", "Add audio", "Add LoRA", "Gallery", "Se
     if wanted not in (clip.get("node") or ""):
         FAILURES.append(f"the timeline node body has no {wanted!r} tool")
 
-# A new timeline is an empty strip: no card, and two ways to start one.
+# A piece is at least one shot: the empty strip is not a state the node can be
+# left in, because every way of reaching it is somebody deleting cards.
 empty = report.get("empty", {})
-check("a new timeline holds no cards", empty.get("cards"), 0)
-check("...and still draws after the first is added", empty.get("added"), 1)
-for wanted in ("no frames yet", "Write a segment", "Cut in a clip"):
-    if wanted not in (empty.get("modal") or ""):
-        FAILURES.append(f"the empty strip does not offer {wanted!r}")
-if "Nothing on the strip yet" not in (empty.get("node") or ""):
-    FAILURES.append("the node body does not say the strip is empty")
+check("an empty blob opens as one blank shot", empty.get("cards"), 1)
+check("...which is what gets written back", empty.get("written"), 1)
+check("...and it wears that shot's editor", empty.get("wears"), "shot")
+check("a blob written with no cards opens the same way", empty.get("fromEmptyList"), 1)
+check("deleting every card leaves one blank shot",
+      (empty.get("cleared") or {}).get("cards"), 1)
+check("...with nothing written in it", (empty.get("cleared") or {}).get("prompt"), "")
+check("...and the face back to being that shot's",
+      (empty.get("cleared") or {}).get("wears"), "shot")
+check("...and the strip still draws once a second is added", empty.get("added"), 2)
 
 # Controls that write through an owner's callback still move what they draw.
+# ---- the face rule ----------------------------------------------------------
+
+faces = report.get("faces", {})
+check("one shot and nothing else wears the shot's editor",
+      faces.get("lone"), {"wears": "shot", "grow": True})
+check("...and a version-1 blob lifts into exactly that",
+      faces.get("legacy"), {"wears": "shot", "grow": True})
+# Each of these is still one segment. What takes the strip is that the one-shot
+# face has nowhere to show them — and a face that hides a queued field is worse
+# than a face that is bigger than it needs to be.
+for name, what in [("globalPrompt", "a standing prompt"),
+                   ("pool", "a reference pool"),
+                   ("globalLoras", "LoRAs on every shot"),
+                   ("soundscape", "a soundscape"),
+                   ("music", "a score")]:
+    check(f"one shot plus {what} wears the strip",
+          faces.get(name), {"wears": "strip", "grow": False})
+check("two shots wear the strip", faces.get("twoShots"), {"wears": "strip", "grow": False})
+check("a piece of one supplied clip wears the strip — there is no shot to show",
+      faces.get("oneClip"), {"wears": "strip", "grow": False})
+
+# The panel is the writing area, not just the box inside it.
+claim = report.get("claim", {})
+check("clicking the panel's dead space puts the caret in the box",
+      claim.get("panelItself"), True)
+check("...but the pill row keeps its own clicks", claim.get("pills"), False)
+check("...and so does a control", claim.get("aButton"), False)
+
+# The piece-view toggle: the only way to the piece's own controls while the
+# piece is one shot, and the way back once you are there.
+view = report.get("pieceView", {})
+check("the shot face offers the toggle", view.get("shotFaceOffers"), True)
+check("pinned, one shot wears the strip", view.get("pinnedWears"), "strip")
+check("...and offers the way back", view.get("stripFaceOffersWayBack"), True)
+check("two shots hide it — there is no shot face to go back to",
+      view.get("manyShotsHideIt"), True)
+check("clicking it pins the node, not the blob", view.get("clickPinned"), True)
+check("...switches the face", view.get("clickSwitchedFace"), "strip")
+check("...and writes nothing the render reads", view.get("blobUntouched"), True)
+check("clicking it again comes back to the shot",
+      (view.get("backAgain") or {}).get("wears"), "shot")
+check("...leaving the property as it found it",
+      (view.get("backAgain") or {}).get("pinGone"), True)
+
+grew = report.get("grew", {})
+check("writing the next shot adds a card", grew.get("cards"), 2)
+check("...leaves the first one's prompt where it was", grew.get("firstKept"), "a lighthouse")
+check("...does not promote it to the piece's standing prompt",
+      grew.get("piecePromptStillEmpty"), True)
+check("...opens the new card's seam the way the strip does",
+      grew.get("secondContinues"), True)
+check("...and narrates it by opening the strip rather than swapping the face",
+      grew.get("windowOpened"), True)
+check("...after which the face is the strip", grew.get("faceNow"), "strip")
+
 controls = report.get("controls", {})
 check("the render toggle moves a one-card strip to one pass", controls.get("toSingle"), "single")
 check("...and back to chained", controls.get("backToChained"), "chained")
@@ -649,9 +1007,4 @@ check("the prompt survives the round trip",
 check("the rebuilt body is not empty",
       report.get("switch", {}).get("rendered"), True)
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print(f"the frontend loads and all {len(report['nodes'])} bodies mount")
+passed(f"the frontend loads and all {len(report['nodes'])} bodies mount")

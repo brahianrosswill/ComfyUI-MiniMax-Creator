@@ -136,6 +136,33 @@ export async function saveSettings(patch) {
   return body.settings ?? {};
 }
 
+// The settings page re-fetches on every opening — the server is the only copy
+// it trusts. The node bodies cannot do that: the sampler row is drawn
+// synchronously on every render, and some of what it draws (the shift pills'
+// visibility) is a setting. So this holds the last answer the server gave —
+// primed once when the first body mounts, kept current by the settings page
+// writing every reply through `noteSettings`. Until the first answer lands the
+// fallbacks are in force, which are the server's own defaults.
+let uiSettings = null;
+let uiSettingsPrimed = null;
+
+export function uiSetting(key, fallback) {
+  return uiSettings && key in uiSettings ? uiSettings[key] : fallback;
+}
+
+/** The settings page's replies come through here, so the cache is never older
+ *  than the last thing the page showed. */
+export function noteSettings(settings) {
+  uiSettings = settings;
+}
+
+/** Fetch the settings once, ever; `onReady` fires when the cache holds them —
+ *  immediately, after the first caller's fetch has already landed. */
+export function primeSettings(onReady) {
+  uiSettingsPrimed = uiSettingsPrimed ?? loadSettings().then(noteSettings).catch(() => {});
+  if (onReady) uiSettingsPrimed.then(onReady);
+}
+
 let modelsAt = 0;
 let modelsCache = null;
 let modelsInFlight = null;

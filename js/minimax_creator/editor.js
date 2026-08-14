@@ -20,7 +20,7 @@ import { openTrim, trimLabel } from "./trim.js";
 import { PromptBox, focusEnd, openEditorSheet } from "./prompt.js";
 import { RefinePanel, refineButton, refine } from "./refine.js";
 import { openAspectPopover, openResolutionPopover, aspectGlyph, PILL_GLYPH } from "./pills.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as Turbo from "./turbo.js";
@@ -66,6 +66,15 @@ export class CreatorEditor {
    *   says this editor owns the weights rather than inheriting them.
    */
   /**
+   * @param {{shown: () => boolean, toggle: () => void}} [options.pieceView]
+   *   the piece-view toggle, supplied only for the face of a piece of one shot.
+   *   A piece holds things a shot does not — the standing prompt, the reference
+   *   pool, the LoRAs on every shot — and while there is one shot none of them
+   *   has anywhere to be shown, so without this they cannot be set at all: you
+   *   would need a second shot to reach the controls that make the first one
+   *   part of a piece.
+   */
+  /**
    * @param {{active: () => boolean, toggle: () => void}} [options.preStage]
    *   the pre-stage pill's wiring, supplied only for a node body: whether a
    *   PreStage currently claims this node, and spawning/removing one. The state
@@ -93,17 +102,35 @@ export class CreatorEditor {
    *   its body when the architecture changes, and the satellite floating the
    *   stage beside the node was bound once, to the owner's.
    */
+  /**
+   * @param {object} [options.piece]  where the settings that belong to the whole
+   *   node live: the canvas, the weights and the turbo switch. Defaults to the
+   *   state, which is right whenever this editor's state *is* the node's — the
+   *   pre-stage's, and the shot editor inside a window, which owns none of them
+   *   anyway. The one shot of a piece passes the piece: its canvas and weights
+   *   are held one level up, because they are what every shot on the strip is
+   *   held to, and there is nothing else different about being the only one.
+   *
+   *   Read as well as written through this. `syncTimeline` mirrors the canvas
+   *   back down onto every segment, so `resolved(state)` goes on answering — it
+   *   is only the writes that have to land where the value actually lives, or
+   *   the next mirror would wipe them.
+   */
   constructor({ state, onCommit, canvasPills = true, continuePill = false,
                 refineTarget = null, onRefined = null, onReverted = null,
                 samplingWidgets = null, onWidgetChange = null, nodeId = null,
-                routeOf = null, setRoute = null, preStage = null,
+                routeOf = null, setRoute = null, preStage = null, pieceView = null,
                 durationPill = true, extraPills = null, extraTools = null,
-                settingsTool = true, stage = null, editorTitle = null }) {
+                settingsTool = true, stage = null, editorTitle = null,
+                piece = null, afterPanel = null }) {
+    this.piece = piece ?? state;
+    this.afterPanel = afterPanel;
     // What the window this body opens into is called. A node face is a preview
     // of one generation, and the window is that generation — so the owner names
     // it for what it makes rather than for the control that opened it.
     this.editorTitle = editorTitle ?? t("Shot");
     this.preStage = preStage;
+    this.pieceView = pieceView;
     this.durationPill = durationPill;
     this.settingsTool = settingsTool;
     this.extraPills = extraPills;
@@ -113,7 +140,7 @@ export class CreatorEditor {
     // body owns its own; a timeline segment editor reads the timeline's and
     // cannot set it, because a route that differed between two shots of one clip
     // would not be a route.
-    this.routeOf = routeOf ?? (() => this.state.models?.route ?? "auto");
+    this.routeOf = routeOf ?? (() => this.piece.models?.route ?? "auto");
     this.setRoute = setRoute;
     this.onCommit = onCommit;
     this.canvasPills = canvasPills;
@@ -164,6 +191,12 @@ export class CreatorEditor {
     this.loraHost = el("div");
     this.pillsHost = el("div");
     this.noticeHost = el("div");
+    // Between what is being asked for and how it is run — which is where the
+    // next shot goes, because a second shot is part of the first question and
+    // not of the second. Empty unless an owner has something to put there; the
+    // one that does is a piece of one shot, which puts the unexposed stretch of
+    // film that grows it into a strip. See `TimelineBody.renderGrow`.
+    this.growHost = el("div");
     // Last, the way the Timeline puts it last: the panel says what the piece is
     // and this says how it is run.
     this.samplingHost = el("div");
@@ -197,17 +230,27 @@ export class CreatorEditor {
       this.loraHost,
       // `frame`, not `root`: the box brings its own disclosure, which folds it
       // away once a rewrite is what gets queued.
-      el("div", { class: "mmc-panel" }, [
+      this.panel = el("div", { class: "mmc-panel" }, [
         ...(this.onFace ? [this.expandHost] : []),
         this.prompt.frame, this.refinePanel.root, this.pillsHost,
       ]),
       this.noticeHost,
+      this.growHost,
       this.samplingHost,
     ]);
 
+    // The whole panel is the writing area, not just the box inside it — see
+    // `PromptBox.claim`.
+    this.prompt.claim(this.panel);
+
     // The weights pill needs the file lists to say anything useful, and every
     // node body on the canvas shares the one request.
-    if (this.nodeId) loadCatalog(() => this.adoptWeights());
+    //
+    // Only when this editor owns the piece. Handed one — the face of a piece of
+    // one shot — the owner is already watching the catalog for the same weights
+    // block, and two watchers guess at it twice and redraw twice for the one
+    // answer.
+    if (this.nodeId && this.piece === this.state) loadCatalog(() => this.adoptWeights());
 
     this.prompt.setValue(this.state.prompt ?? "");
     this.render();
@@ -228,25 +271,14 @@ export class CreatorEditor {
    * saves with the workflow and can be overridden by picking something else.
    */
   adoptWeights() {
-    if (S.guessModels(this.state.models, catalogFiles())) this.commit();
+    if (S.guessModels(this.piece.models, catalogFiles())) this.commit();
     else this.render();
   }
 
 
-  /** The sampler widgets as turbo.js wants them: write-through without the
-   *  re-render, because everything that uses this commits — and renders — once
-   *  at the end rather than three times along the way. */
+  /** See `sampling.widgetIO`. */
   widgetIO() {
-    return {
-      value: (name, fallback) => this.samplingWidgets?.[name]?.value ?? fallback,
-      set: (name, value) => {
-        const widget = this.samplingWidgets?.[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
-        this.onWidgetChange?.();
-      },
-    };
+    return widgetIO(() => this.samplingWidgets, () => this.onWidgetChange?.());
   }
 
   commit() {
@@ -256,7 +288,7 @@ export class CreatorEditor {
     // Same timing, same reason: removing or disabling the turbo LoRA anywhere —
     // the chip's ✕, the manager — is switching turbo off, and the sampler row
     // has to come back before this state is serialized with `on` still in it.
-    if (this.samplingWidgets && this.state.turbo) Turbo.sync(this.state, this.widgetIO());
+    if (this.samplingWidgets && this.piece.turbo) Turbo.sync(this.piece, this.widgetIO());
     this.onCommit?.();
     this.render();
   }
@@ -521,17 +553,17 @@ export class CreatorEditor {
       // The turbo switch, for a node body only: a timeline segment has no
       // sampler of its own to throw it on.
       turbo: this.nodeId ? Turbo.turboPills({
-        container: this.state,
+        container: this.piece,
         ...this.widgetIO(),
         onCommit: () => this.commit(),
       }) : [],
       // Last on the row, because it is the one thing there you set when you
       // install a checkpoint rather than when you write a prompt.
       trailing: this.nodeId ? [weightsPill({
-        models: this.state.models,
+        models: this.piece.models,
         checkpoints: [S.checkpoint(this.state)],
         onChange: () => this.commit(),
-        turbo: { container: this.state, widgetIO: this.widgetIO() },
+        turbo: { container: this.piece, widgetIO: this.widgetIO() },
       })] : [],
     })] : []));
     this.prompt.refresh();
@@ -539,6 +571,7 @@ export class CreatorEditor {
     this.refinePanel.render();
     this.renderExpand();
     this.renderNotices();
+    this.growHost.replaceChildren(...(this.afterPanel?.() ?? []));
     // The window over the same state, if one is open. Render, never commit —
     // this is the end of the chain, not another link in it.
     this.sheetEditor?.render();
@@ -621,6 +654,7 @@ export class CreatorEditor {
       state: this.state,
       onCommit: () => { this.onCommit?.(); this.render(); },
       canvasPills: this.canvasPills,
+      piece: this.piece,
       durationPill: this.durationPill,
       extraPills: this.extraPills,
       extraTools: this.extraTools,
@@ -728,7 +762,9 @@ export class CreatorEditor {
         ...(this.settingsTool ? [el("button", {
           class: "mmc-tool",
           title: t("Preferences for this ComfyUI — output quality. Not saved into the workflow."),
-          onclick: () => openSettings(),
+          // Re-rendered on close: the page can change what the sampler row
+          // draws (the shift pills' visibility), and Done should look done.
+          onclick: () => openSettings().then(() => this.render()),
         }, [el("span", { class: "mmc-tool-icon" }, [icon("gear")]), el("span", { text: t("Settings") })])] : []),
       ]),
     ]);
@@ -969,8 +1005,25 @@ export class CreatorEditor {
       // The output folder is the timeline's for the same reason — one file.
       ...(this.canvasPills ? [aspectPill, resPill] : []),
       this.renderRouting(currentMode),
+      ...(this.pieceView ? [this.renderPieceViewPill()] : []),
       ...(this.preStage ? [this.renderPreStagePill()] : []),
     ]);
+  }
+
+  /** The piece-view toggle. See `options.pieceView` — it is the only way to the
+   *  piece's own controls while the piece is one shot, and the way back once
+   *  you are there. */
+  renderPieceViewPill() {
+    const on = this.pieceView.shown();
+    return el("button", {
+      class: `mmc-pill mmc-piece-toggle${on ? " on" : ""}`,
+      "aria-pressed": on ? "true" : "false",
+      title: on
+        ? t("Showing the whole piece. Click to go back to the shot.")
+        : t("Show the whole piece: the standing prompt every shot inherits, the "
+          + "reference pool, and the LoRAs patched onto all of them."),
+      onclick: () => this.pieceView.toggle(),
+    }, [icon("timeline", 16), el("span", { text: t("Timeline") })]);
   }
 
   /** The pre-stage pill: an image-generation node at this node's left edge,
@@ -1113,11 +1166,11 @@ export class CreatorEditor {
   // ---- popovers ------------------------------------------------------------
 
   openAspect(anchor) {
-    openAspectPopover(anchor, this.state, () => this.commit());
+    openAspectPopover(anchor, this.piece, () => this.commit());
   }
 
   openResolution(anchor) {
-    openResolutionPopover(anchor, this.state, () => {
+    openResolutionPopover(anchor, this.piece, () => {
       const asset = S.frameAsset(this.state, "first_frame") || S.frameAsset(this.state, "last_frame");
       return S.resolved(this.state, asset ? this.sizes.get(asset.filename) : null);
     }, () => this.commit());

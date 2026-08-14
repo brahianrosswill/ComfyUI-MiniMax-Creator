@@ -67,13 +67,9 @@ def _load():
 
 
 routes = _load()
+compiler = sys.modules["mmc.compile"]
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def strip(flags, render="chained", **extra):
@@ -189,9 +185,37 @@ check("shot text is the card's", [s["text"] for s in got["shots"]],
       ["shot 1", "shot 2", "shot 3"])
 check("mode", got["mode"], "T2VA")
 
-if FAILURES:
-    print(f"FAILED ({len(FAILURES)})")
-    for line in FAILURES:
-        print(f"  - {line}")
-    sys.exit(1)
-print("ok")
+# ---- the retired target, and who gets asked for cuts -------------------------
+#
+# `creator` was a lone generation's own refine target while a lone generation was
+# its own node. A workflow saved then still posts under it, carrying a version-1
+# blob, and it has to come back as the one card that blob now is.
+
+legacy = {"kind": "creator", "data": {
+    "version": 1, "prompt": "a lighthouse", "duration_s": 6,
+    "aspect": "16:9", "short_edge": 768, "assets": [], "loras": [], "models": {}}}
+mode, shots, _, piece, single, pool, footage = routes._plan(routes._target(legacy))
+check("a retired creator target is one card of a piece", len(shots), 1)
+check("...carrying the blob's own prompt", shots[0]["text"], "a lighthouse")
+# Empty rather than the shot's own sentence: on a lifted blob the prompt sits
+# where a piece keeps its standing description, and reading it as both would hand
+# the model the same text twice — once as what this card inherits and once as the
+# card. `as_piece` puts it on the shot; `_plan` has to lift before it reads.
+check("...with nothing above it to inherit from", piece, "")
+check("...read as a segment", routes._target(legacy)["kind"], "segment")
+check("...at index 0", routes._target(legacy)["index"], 0)
+check("a target that was never the retired one is handed back as it is",
+      routes._target({"kind": "timeline", "data": {}}), {"kind": "timeline", "data": {}})
+
+# Who is asked to divide the clip into shots. It used to be "the Creator node",
+# which was the same question only while a piece of one card could not exist
+# under any other name. It is the card count now, so a one-card strip is asked
+# too — it never was, and a twenty-second single card came back as one uncut
+# shot for it.
+check("a piece of one card has no cut times of its own",
+      len(compiler.timeline_segments(strip([False]))), 1)
+check("a piece of several already has them",
+      len(compiler.timeline_segments(strip([False, True, True]))), 3)
+
+
+passed("ok")

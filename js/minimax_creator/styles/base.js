@@ -48,6 +48,12 @@ export const css = `
   padding: 12px; box-sizing: border-box; height: 100%; overflow: hidden;
 }
 
+/* A body that is hosting another one — the piece of one shot, whose face is that
+   shot's own editor. It is a slot rather than a layout: the body inside brings
+   its own padding, and a second inset here would draw a narrower face than the
+   strip's on a node of the same width. */
+.mmc-root.hosting { padding: 0; gap: 0; }
+
 /* The pre-stage's outer body. It holds whichever editor the architecture calls
    for and is swapped when that changes, so it has to be the full height the DOM
    widget gave it — the .mmc-root inside is what does the layout. */

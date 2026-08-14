@@ -12,6 +12,7 @@
 import { el, icon } from "./dom.js";
 import { t } from "./i18n.js";
 import { openChoicePopover, stepperPill } from "./pills.js";
+import { uiSetting } from "./api.js";
 
 export const SEED_CONTROL = ["fixed", "increment", "decrement", "randomize"];
 
@@ -20,15 +21,52 @@ export const SEED_CONTROL = ["fixed", "increment", "decrement", "randomize"];
 // once as the stock widget underneath.
 export const SAMPLING_WIDGETS = [
   "seed", "control_after_generate", "steps", "cfg", "sampler_name", "scheduler",
+  "shift_video", "shift_audio",
   "block_cache", "spectrum", "spectrum_blend",
 ];
 
 const BLOCK_CACHE_TITLE = {
-  off: "FirstBlockCache is off.",
+  off: "Step caching is off.",
   safe: "FirstBlockCache, safest preset — fewest skipped steps.",
   fast: "FirstBlockCache, the pack's recommended preset.",
   aggressive: "FirstBlockCache, most skipping — fastest, furthest from a native render.",
+  easy: "EasyCache — core's own step reuse, nothing to install. Cannot be combined with Spectrum.",
+  tea: "TeaCache — skips transformer forwards on timestep similarity. Needs ComfyUI-MiniMaxH3-TeaCache.",
 };
+
+/**
+ * Read and write the real widgets, by name.
+ *
+ * The `{value, set}` pair every body hands this row and `turbo.js` — the one
+ * thing all three node bodies had a character-for-character copy of, differing
+ * only in what they called the map they were holding. Here rather than on a
+ * shared base class, because that is all they had in common: their `commit`,
+ * `destroy` and `adoptWeights` are three different jobs that happen to share
+ * three names, and a base class holding one function would have bought that
+ * function at the price of a hierarchy.
+ *
+ * No re-render on write. Everything that uses this commits — and renders — once
+ * at the end rather than three times along the way; a body that wants the
+ * redraw does it in its own `set`.
+ *
+ * @param {() => object} widgets  name -> real ComfyUI widget. A thunk because a
+ *   body may be handed its widgets after it is built.
+ * @param {() => void} [onChange] the node needs redrawing on the canvas
+ */
+export function widgetIO(widgets, onChange) {
+  return {
+    value: (name, fallback) => widgets()?.[name]?.value ?? fallback,
+    set: (name, value) => {
+      const widget = widgets()?.[name];
+      if (!widget) return;
+      widget.value = value;
+      // Some of them — the seed's after-generate control — hang behaviour off
+      // the callback rather than off the value, so it is not optional.
+      widget.callback?.(value);
+      onChange?.();
+    },
+  };
+}
 
 /**
  * @param {object} options
@@ -118,6 +156,35 @@ export function samplingBar({ widgets, value, set, perSegment = false, turbo = [
         onPick: (picked) => set(name, picked),
       }),
     }, [el("span", { text: String(widget.value) })]));
+  }
+
+  // The flow shifts, H3's two clocks. Drawn as one compact stepper pair after
+  // the scheduler because they are schedule too: the checkpoints' own values
+  // by default, reset by the turbo switch to what the picked LoRA's card
+  // names, and honest about which track a wrong value ruins first.
+  //
+  // Hidden unless Settings → Nodes asks for them: most rows never leave the
+  // checkpoints' own schedule, and the widgets keep working underneath — the
+  // turbo switch still writes them, loaded workflows still carry them. A value
+  // *off* that schedule shows its pill whatever the setting says, the custom-CRF
+  // rule: what is in force has to be visible, and hiding it is how a stale
+  // turbo preset would quietly ruin every later render.
+  const showShifts = uiSetting("show_shift_pills", false);
+  if (widgets.shift_video && (showShifts || Number(value("shift_video", 12)) !== 12)) {
+    pills.push(stepperPill({
+      value: Number(value("shift_video", 12)), min: 0.01, max: 100, step: 0.5, width: "48px",
+      title: t("The video flow shift. 12 is the checkpoints' own schedule; a turbo LoRA's card may name another."),
+      format: (n) => t("shift {n}", { n: +n.toFixed(2) }),
+      onChange: (next) => set("shift_video", next),
+    }));
+  }
+  if (widgets.shift_audio && (showShifts || Number(value("shift_audio", 3)) !== 3)) {
+    pills.push(stepperPill({
+      value: Number(value("shift_audio", 3)), min: 0.01, max: 100, step: 0.5, width: "48px",
+      title: t("The audio flow shift. 3 is the checkpoints' own schedule. A wrong one distorts the soundtrack before it touches the picture."),
+      format: (n) => t("audio {n}", { n: +n.toFixed(2) }),
+      onChange: (next) => set("shift_audio", next),
+    }));
   }
 
   // The accelerators. Off is the default and reads as off — an unlit pill —

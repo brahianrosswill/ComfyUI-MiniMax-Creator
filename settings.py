@@ -60,6 +60,13 @@ DEFAULTS = {
     "video_crf": DEFAULT_CRF,
     "video_prefix": DEFAULT_VIDEO_PREFIX,
     "image_prefix": DEFAULT_IMAGE_PREFIX,
+    # Whether the sampler row draws the two flow-shift pills. Off by default:
+    # most rows never leave the checkpoints' own schedule, and two more numbers
+    # on every node is a cost only the people dialling schedules should pay.
+    # Nothing queued ever reads this — it is a UI preference — but it lives
+    # here because it is per-machine like everything else in this file, and one
+    # settings page writing one file beats a second store for one boolean.
+    "show_shift_pills": False,
 }
 
 
@@ -83,6 +90,10 @@ def clean(raw):
         if not MIN_CRF <= crf <= MAX_CRF:
             raise ValueError(f"video_crf must be between {MIN_CRF} and {MAX_CRF}")
         clean_settings["video_crf"] = crf
+    if "show_shift_pills" in raw and raw["show_shift_pills"] is not None:
+        if not isinstance(raw["show_shift_pills"], bool):
+            raise ValueError("show_shift_pills must be true or false")
+        clean_settings["show_shift_pills"] = raw["show_shift_pills"]
     for key, fallback in (("video_prefix", DEFAULT_VIDEO_PREFIX),
                           ("image_prefix", DEFAULT_IMAGE_PREFIX)):
         if key in raw and raw[key] is not None:

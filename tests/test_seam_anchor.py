@@ -53,12 +53,7 @@ except Exception as exc:  # noqa: BLE001
     print(f"skipped: package not importable ({type(exc).__name__}: {exc})")
     sys.exit(0)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 # ---- stubs -------------------------------------------------------------------
@@ -150,6 +145,13 @@ def placed(values):
     return layout, repair._target_origin(layout)
 
 
+def pin(keyframe):
+    """The pixel index the entry pins its guide at, on either core."""
+    if repair.CORE_ANCHORS_ANYWHERE:
+        return keyframe["resolved_frame_index"]
+    return keyframe.get(repair.FRAME_INDEX_KEY)
+
+
 def anchors(values):
     """Where the layout's cond rows sit, relative to the clip's first frame."""
     layout, origin = placed(values)
@@ -178,7 +180,7 @@ check("a picture-only seam pins the inherited frame on frame 0", anchors(values)
 # "frame 0" anchor. This is the case that broke.
 values = encode(compiled_segment(**{"continue": True, "continue_audio": True}))
 check("the seam carries its real index",
-      [kf.get(repair.FRAME_INDEX_KEY) for kf in values["minimax_keyframes"]], [0])
+      [pin(kf) for kf in values["minimax_keyframes"]], [0])
 check("a sounding seam still pins the inherited frame on frame 0",
       anchors(values), [0.0])
 
@@ -187,10 +189,23 @@ check("a sounding seam still pins the inherited frame on frame 0",
 values = encode(compiled_segment(**{"continue": True, "continue_audio": True, "feather": 22}))
 spans = [encoder._frames_covered(k) for k in range(len(values["minimax_keyframes"]))]
 check("a blended seam pins each step at its own pixel offset",
-      [kf[repair.FRAME_INDEX_KEY] for kf in values["minimax_keyframes"]], spans)
+      [pin(kf) for kf in values["minimax_keyframes"]], spans)
 check("a blended seam's guides land on the clip's own grid",
       anchors(values),
       [round(5.0 / 3.0 * index, 4) for index in spans])
+
+# The old-core spelling, whichever core this suite runs against: with the
+# general anchor forced off, `_pin` passes the nearest legal stock anchor and
+# carries the real index for `payload.py` to write in.
+_had_anchor = encoder.CORE_ANCHORS_ANYWHERE
+encoder.CORE_ANCHORS_ANYWHERE = False
+check("old core: a mid-run guide passes stock frame 0 and carries its index",
+      encoder._pin({"latent": "L"}, 9),
+      {"resolved_frame_index": 0, repair.FRAME_INDEX_KEY: 9, "latent": "L"})
+check("old core: a last-frame guide passes stock's own last anchor",
+      encoder._pin({"latent": "L"}, 148, stock=148),
+      {"resolved_frame_index": 148, repair.FRAME_INDEX_KEY: 148, "latent": "L"})
+encoder.CORE_ANCHORS_ANYWHERE = _had_anchor
 
 # ---- the blend and the tail ---------------------------------------------------
 #
@@ -234,9 +249,4 @@ loaded = {
 values = encoder._encode_frames(clip, vae, AudioVae(), compiled, loaded)[0][0][1]
 check("a start frame beside a sound seam stays on frame 0", anchors(values), [0.0])
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print(f"  - {failure}")
-    sys.exit(1)
-print("all seam-anchor tests passed")
+passed("all seam-anchor tests passed")

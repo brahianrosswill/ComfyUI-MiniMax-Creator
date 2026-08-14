@@ -7,9 +7,23 @@ time coordinate can sit anywhere on the target timeline, not just at its first
 or last frame. All three are what a timeline seam is made of — the previous
 segment's last frames pinned where the new segment starts, its audio tail
 pinned so the sound carries phase-locked across the join, references intact
-alongside. Core's node surface stops short of them in two places.
+alongside.
 
-First, `MiniMaxH3.extra_conds` cannot carry keyframes and references at once:
+Core has since caught up on the video half: e01fb4c5 ("Add MiniMaxH3AddGuide",
+2026-08-13) rebuilt `PackedLayout` around the general anchor — `cond_t =
+target_origin + FRAME_RESCALE * resolved_frame_index`, the same formula this
+module wrote in by hand — and made `extra_conds` append rather than overwrite,
+so keyframes and references coexist. On such a core `encode.py` passes real
+indices straight through (`CORE_ANCHORS_ANYWHERE` below), the two video
+repairs here have nothing keyed to act on, and the wrapper's remaining job is
+the audio tail: core anchors a guide's sound *starting* at its frame, and a
+ref-audio block sits in the imitation span before the clip, but a seam needs a
+tail that *ends* on a frame of the target's own timeline. No core release
+expresses that, so the `AUDIO_END_KEY` rewrite runs on every core.
+
+On an older core, both of the original gaps are still there, and the wrapper
+still repairs them in full. First, `MiniMaxH3.extra_conds` cannot carry
+keyframes and references at once:
 
     keyframes = kwargs.get("minimax_keyframes", None)
     if keyframes is not None:
@@ -56,10 +70,20 @@ wrapper raises on a mismatch: a core layout change should be heard about, not
 papered over with misplaced anchors.
 """
 
+import inspect
+
 import torch
 
 import comfy.patcher_extension
-from comfy.ldm.minimax.model import FRAME_RESCALE
+from comfy.ldm.minimax.model import FRAME_RESCALE, PackedLayout
+
+# Whether this core places a keyframe anchor at any frame and lets keyframes
+# ride alongside references (e01fb4c5 and later). Probed off the semantic
+# itself rather than a version string: the general constructor computes the
+# anchor from `resolved_frame_index` directly and lost the `frame_count`
+# parameter the old first/last-only arithmetic needed.
+CORE_ANCHORS_ANYWHERE = (
+    "frame_count" not in inspect.signature(PackedLayout.__init__).parameters)
 
 WRAPPER_KEY = "minimax_creator_cond_video_latents"
 
@@ -167,9 +191,11 @@ def _reposition(layout, payload):
 def _wrapper(executor, *args, **kwargs):
     payload = kwargs.get("minimax_payload")
     if payload:
-        # Only when both are present. Either one alone is already correct, and
-        # rewriting it would be this module claiming a behaviour it lacks.
-        if payload.get("keyframes") and payload.get("refs"):
+        # Only on a core whose `extra_conds` overwrites, and only when both are
+        # present. Either one alone is already correct, and rewriting it would
+        # be this module claiming a behaviour it lacks.
+        if (not CORE_ANCHORS_ANYWHERE
+                and payload.get("keyframes") and payload.get("refs")):
             payload = dict(payload)
             payload["cond_video_latents"] = _rebuild(payload)
             kwargs = {**kwargs, "minimax_payload": payload}

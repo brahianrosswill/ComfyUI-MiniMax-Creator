@@ -35,12 +35,7 @@ def _load():
 
 refine = _load()
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def expect_error(label, fn, fragment):
@@ -541,9 +536,4 @@ check("...and without one, the old rule stands",
           [{"text": "x"}], piece={"text": "y", "rewrite": True}), True)
 
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all refiner tests passed")
+passed("all refiner tests passed")

@@ -56,16 +56,12 @@ except Exception as exc:  # noqa: BLE001
     sys.exit(0)
 
 cn = importlib.import_module(f"{PACKAGE}.creator_node")
+accel_mod = importlib.import_module(f"{PACKAGE}.accel")
 tl = importlib.import_module(f"{PACKAGE}.timeline")
 outputs_mod = importlib.import_module(f"{PACKAGE}.outputs")
 settings_mod = importlib.import_module(f"{PACKAGE}.settings")
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 def expect_error(label, fn, fragment):
@@ -258,9 +254,15 @@ expect_error("an absolute prefix, pointed at the flag that does work",
              lambda: save_prefix(output_prefix="/mnt/big/renders"),
              "--output-directory")
 
-# The payload is a segment payload with nothing in front of it.
+# The payload is a segment payload with nothing in front of it. It carries a
+# canvas like every other payload does — a lone generation goes through
+# `timeline_payloads` exactly as a strip does, and that is where the one
+# geometry every pass is held to gets stamped on. What it is stamped *with* is
+# the answer this generation would have worked out for itself; the adaptive
+# cases are asserted below.
 payload = json.loads(segment_inputs["segment_data"])
-check("the payload carries the request", sorted(payload), ["continue", "continue_audio", "request"])
+check("the payload carries the request",
+      sorted(payload), ["canvas", "continue", "continue_audio", "request"])
 check("nothing to continue from", (payload["continue"], payload["continue_audio"]), (False, False))
 check("the request is the creator blob", payload["request"]["prompt"], "a red room")
 
@@ -597,7 +599,7 @@ finally:
 # ---- accelerators -----------------------------------------------------------
 
 check("no accelerator nodes by default",
-      [k for k in kinds if k in (tl.accel.BLOCK_CACHE_NODE, tl.accel.SPECTRUM_NODE)], [])
+      [k for k in kinds if k in (accel_mod.BLOCK_CACHE_NODE, accel_mod.SPECTRUM_NODE)], [])
 check("the sampler reads the segment directly when off",
       sampler["model"][0], segment_id)
 
@@ -616,10 +618,10 @@ class _FakePack:
 
 
 _restore = dict(comfy_nodes.NODE_CLASS_MAPPINGS)
-comfy_nodes.NODE_CLASS_MAPPINGS[tl.accel.BLOCK_CACHE_NODE] = _FakePack
+comfy_nodes.NODE_CLASS_MAPPINGS[accel_mod.BLOCK_CACHE_NODE] = _FakePack
 try:
     accel_kinds = by_class(build(block_cache="fast").expand)
-    patches = accel_kinds[tl.accel.BLOCK_CACHE_NODE]
+    patches = accel_kinds[accel_mod.BLOCK_CACHE_NODE]
     accel_segment = accel_kinds["MiniMaxH3TimelineSegment"][0][0]
     check("one accelerator patch", len(patches), 1)
     check("the patch reads the segment", patches[0][1]["model"][0], accel_segment)
@@ -647,7 +649,7 @@ timeline_data = json.dumps({
     "models": MODELS,
     "segments": [{"prompt": "a red room", "assets": [], "loras": [], "duration_s": 6}],
 })
-tl_out = with_id(tl.MiniMaxH3Timeline, NODE_ID, lambda: tl.MiniMaxH3Timeline.execute(
+tl_out = with_id(cn.MiniMaxH3Timeline, NODE_ID, lambda: cn.MiniMaxH3Timeline.execute(
     timeline_data=timeline_data,
     seed=100, steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple"))
 tl_kinds = by_class(tl_out.expand)
@@ -689,6 +691,39 @@ check("both sample identically",
       {k: v for k, v in tl_kinds["KSampler"][0][1].items() if k not in ("model", "positive", "negative", "latent_image")},
       {k: v for k, v in sampler.items() if k not in ("model", "positive", "negative", "latent_image")})
 
+# ---- ...and a version-1 blob is one too --------------------------------------
+#
+# The same claim, made of the blob rather than of the request: hand the Timeline
+# the *Creator's own* `creator_data` — the shape every workflow saved before the
+# two nodes became one still holds — and `compile.as_piece` has to lift it into
+# the strip that emits exactly the graph the Creator emits from it directly.
+#
+# This is what says the merge is safe to make. Until the two node classes are
+# one, it is the only thing standing between an old workflow and a silently
+# different render; after they are one, it is the test that the lift is load-
+# bearing rather than decorative.
+
+lifted_out = with_id(cn.MiniMaxH3Timeline, NODE_ID, lambda: cn.MiniMaxH3Timeline.execute(
+    timeline_data=DATA,
+    seed=100, steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple"))
+lifted_kinds = by_class(lifted_out.expand)
+
+check("a v1 creator blob emits the same node classes",
+      {k: len(v) for k, v in sorted(lifted_kinds.items())},
+      {k: len(v) for k, v in sorted(kinds.items())})
+check("...loading the same files", loader_files(lifted_kinds), loader_files(kinds))
+check("...and sampling the same way",
+      {k: v for k, v in lifted_kinds["KSampler"][0][1].items()
+       if k not in ("model", "positive", "negative", "latent_image")},
+      {k: v for k, v in sampler.items()
+       if k not in ("model", "positive", "negative", "latent_image")})
+
+lifted_payload = json.loads(lifted_kinds["MiniMaxH3TimelineSegment"][0][1]["segment_data"])
+lifted_compiled = compiler.compile_segment(lifted_payload, media.image_size)
+for field in ("prompt", "mode", "checkpoint", "frames", "seconds", "width", "height"):
+    check(f"...and compiling the same {field}",
+          getattr(lifted_compiled, field), getattr(creator_compiled, field))
+
 # --- the two-pass upscale ----------------------------------------------------
 #
 # Past the native short edge the render grows a refine pass: a second segment
@@ -722,8 +757,14 @@ check("...with the sampler row's settings and the default refine denoise",
 
 pinned = [json.loads(i["segment_data"]) for _, i in hires_kinds["MiniMaxH3TimelineSegment"]
           if "canvas" in json.loads(i["segment_data"])]
-check("exactly the refine segment is pinned, to the target canvas",
-      [(p["canvas"]["width"], p["canvas"]["height"]) for p in pinned], [TARGET])
+# Both segments carry a canvas: every payload does now, because a lone
+# generation compiles through `timeline_payloads` like any other piece and that
+# is where the one geometry gets stamped. What matters is which canvas each of
+# them is held to — the first samples at the slider's own edge, and only the
+# refine pass is pinned to the target it is upscaling to.
+check("the first pass samples under the target and the refine pass is at it",
+      [(p["canvas"]["width"], p["canvas"]["height"]) for p in pinned],
+      [(1344, 768), TARGET])
 
 check("the reel decodes the refined latent, not the first pass's",
       hires_graph[hires_kinds["MiniMaxH3Reel"][0][1]["samples"][0]]["class_type"],
@@ -734,10 +775,3 @@ direct_kinds = by_class(build(data=json.dumps(
 check("direct past native is the old one-pass graph",
       ("MiniMaxH3RefinePass" in direct_kinds, len(direct_kinds["MiniMaxH3TimelineSegment"])),
       (False, 1))
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all creator graph tests passed")

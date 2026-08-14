@@ -340,84 +340,50 @@ export const css = `
 .mmc-tl-add-pair .mmc-tl-add span:first-child { font-size: 15px; }
 .mmc-tl-add-clip { border-style: solid; }
 
-/* --- leader: the strip before anything is on it --------------------------- */
-/* Not an empty state in the apologetic sense. Leader is the unexposed stretch
-   at the head of a reel, and that is exactly what a new timeline is — so it is
-   drawn as film rather than as a missing thing, with the perforation rail this
-   package uses nowhere else, and it takes the width the first card will take.
-   The two ways to begin sit inside it with equal weight, because neither is a
-   default: that is why there is no card here in the first place. */
-/* One panel instead of a row of cards, so the strip stops being a card grid
-   for as long as there are none. */
-.mmc-tl-strip.leader { display: block; min-height: 0; overflow: visible; padding-bottom: 0; }
-.mmc-tl-leader {
-  position: relative;
-  display: flex; flex-direction: column; justify-content: center; gap: 16px;
-  padding: 22px 26px; border-radius: 16px;
-  border: 1px solid var(--mmc-line); background: var(--mmc-surface);
-}
-/* The perforations. Top and bottom edges, inset from the corners so the rail
-   reads as running through the panel rather than framing it. */
-.mmc-tl-leader::before, .mmc-tl-leader::after {
-  content: ""; position: absolute; left: 14px; right: 14px; height: 5px;
-  background-image: repeating-linear-gradient(90deg,
-    var(--mmc-surface-3) 0 9px, transparent 9px 23px);
-}
-.mmc-tl-leader::before { top: 8px; }
-.mmc-tl-leader::after { bottom: 8px; }
+/* The piece-view toggle: which face this node is wearing while it holds one
+   shot. Amber, because that is the strip's colour everywhere else in here — the
+   lane's ticks, the pass casing, the cut marks — and pointedly not the
+   accelerator blue the generic aria-pressed rule above would otherwise give it.
+   Blue in this pack means "this render is not native", and a control that only
+   decides what you are looking at has nothing to say about the render.
 
-.mmc-tl-leader-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-/* The strip's own utility voice — the one the Context-IR field names use. The
-   amber tick is the single accent in here: it marks the head of the reel. */
-.mmc-tl-leader-mark {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px; letter-spacing: .04em; color: var(--mmc-accent);
-  display: flex; align-items: center; gap: 7px;
+   Three classes, so it beats that rule wherever the two land in the cascade. */
+.mmc-pill.mmc-piece-toggle.on {
+  border-color: rgba(240,166,60,.45); color: var(--mmc-accent);
 }
-.mmc-tl-leader-mark::before {
-  content: ""; width: 3px; height: 12px; border-radius: 1px; background: var(--mmc-accent);
-}
-.mmc-tl-leader-line { color: var(--mmc-dim); font-size: 13px; }
+.mmc-pill.mmc-piece-toggle.on:hover:not(:disabled) { border-color: var(--mmc-accent); }
+/* Held: the strip is showing and cannot be left while the piece carries
+   fields the shot face has no slot for. Still lit — the view it names is the
+   one on screen — but dimmed and dead, with the reason in its tooltip. */
+.mmc-pill.mmc-piece-toggle.on:disabled { opacity: .55; cursor: not-allowed; }
 
-/* Two equal tiles rather than two tiles the width of their own sentences: they
-   are the same kind of choice and neither is recommended, which is the reading
-   that matters here. */
-.mmc-tl-leader-choices { display: flex; gap: 12px; flex-wrap: wrap; max-width: 760px; }
-.mmc-tl-start {
-  flex: 1 1 280px; min-width: 0;
-  display: flex; align-items: center; gap: 12px; text-align: left;
-  padding: 13px 18px 13px 14px; border-radius: 13px; cursor: pointer;
-  background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
-  color: var(--mmc-text); font-family: inherit;
-  transition: border-color .12s ease, background .12s ease;
-}
-.mmc-tl-start:hover:not(:disabled) { background: var(--mmc-surface-3); border-color: rgba(255,255,255,.2); }
-.mmc-tl-start:disabled { cursor: not-allowed; opacity: .5; }
-.mmc-tl-start-icon {
-  width: 38px; height: 38px; border-radius: 11px; flex: none;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--mmc-bg); border: 1px solid var(--mmc-line); color: var(--mmc-dim);
-}
-.mmc-tl-start:hover:not(:disabled) .mmc-tl-start-icon { color: var(--mmc-accent); }
-.mmc-tl-start-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.mmc-tl-start-name { font-size: 14px; }
-.mmc-tl-start-line { font-size: 12px; color: var(--mmc-dim); }
+/* --- the stretch after the shot ------------------------------------------- */
+/* Where a piece of one shot grows a second one. The same perforation rail the
+   leader wears, one card later and meaning the same thing: film that has not
+   been shot yet. It sits between the prompt and the sampler row because that is
+   where the next shot goes — part of what is being asked for, not of how it is
+   run.
 
-/* The same leader, at the size the node body has for it: one perforated band
-   with the sentence in it, and a click that opens the strip. */
-/* No box of its own: the rail is enough, and a filled panel here would be a
-   third rectangle inside the two the face already has. */
-.mmc-tl-empty {
-  position: relative; flex: 1; min-height: 40px; display: flex; align-items: center;
-  padding: 14px 2px 0; cursor: pointer;
-  color: var(--mmc-dim); font-size: 12px; line-height: 1.45;
+   Quiet, and it has to be: most renders are one shot, so a control that
+   announced itself would be wrong nine times out of ten. It is the only thing
+   between the panel and the sampler pills, which is what makes it findable
+   without being loud. */
+.mmc-tl-grow {
+  position: relative; width: 100%; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 13px 2px 3px; background: none; border: 0; border-radius: 8px;
+  color: var(--mmc-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  transition: color .12s ease;
 }
-.mmc-tl-empty:hover { color: var(--mmc-text); }
-.mmc-tl-empty::before {
+.mmc-tl-grow::before {
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 4px;
   background-image: repeating-linear-gradient(90deg,
     var(--mmc-surface-3) 0 8px, transparent 8px 20px);
 }
+.mmc-tl-grow:hover:not(:disabled) { color: var(--mmc-text); }
+.mmc-tl-grow:disabled { cursor: not-allowed; opacity: .4; }
+.mmc-tl-grow-mark { font-size: 14px; line-height: 1; color: var(--mmc-off); }
+.mmc-tl-grow:hover:not(:disabled) .mmc-tl-grow-mark { color: var(--mmc-accent); }
 
 /* A clip card. Solid where a shot's card is not, because the difference worth
    seeing at a glance is that this stretch of the piece already exists. */
@@ -435,15 +401,23 @@ export const css = `
 /* --- timeline node body --------------------------------------------------- */
 
 .mmc-tl-summary { gap: 14px; flex: 1; min-height: 0; }
+/* The room grows; the text does not. On a tall node the room soaks up the
+   panel's free height so the reel and the pills dock at the bottom, next to
+   the sampler rows — the shot face's silhouette. On a node sized by content
+   the room is only as tall as the clamped text, so nothing balloons. */
+.mmc-tl-summary-room {
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-height: 40px; cursor: text;
+}
 /* Clamped by lines, not by its flex parent: the node body takes its height from
    what is in it, so "fill the room and hide the rest" gives a prompt of any
-   length all the room it asks for — flex: 1 against a parent that grows is not
+   length all the room it asks for — flex against a parent that grows is not
    a bound at all, and a pasted log made the node taller than the canvas. The
-   max-height is the bound; the flex only lets it be smaller. Six lines at this
-   size and leading is what the summary is for; the modal holds the rest. */
+   max-height is the bound. Six lines at this size and leading is what the
+   summary is for; the modal holds the rest. */
 .mmc-tl-summary-prompt {
-  font-size: 13px; line-height: 1.5; color: var(--mmc-text); cursor: text;
-  flex: 1; min-height: 40px; max-height: 117px; overflow: hidden; word-break: break-word;
+  font-size: 13px; line-height: 1.5; color: var(--mmc-text);
+  flex: 1 1 auto; min-height: 40px; max-height: 117px; overflow: hidden; word-break: break-word;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
 }

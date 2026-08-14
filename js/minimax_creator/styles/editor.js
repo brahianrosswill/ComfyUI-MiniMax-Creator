@@ -113,7 +113,7 @@ export const css = `
    it is where the writing is. */
 .mmc-expand.on { opacity: 1; color: var(--mmc-accent); border-color: rgba(240,166,60,.45); }
 /* Room for it, so a long first line does not run under the button. */
-.mmc-panel > .mmc-prompt-fold > .mmc-prompt, .mmc-panel > .mmc-prestage-prompt { padding-right: 30px; }
+.mmc-panel > .mmc-prompt-fold > .mmc-prompt { padding-right: 30px; }
 
 /* The window the face's corner control opens — and the one a timeline segment
    opens over the strip. One window: both are the same node body over the same
@@ -171,6 +171,24 @@ export const css = `
    to the rewrite that is actually queued. */
 .mmc-prompt-fold { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
 .mmc-prompt-fold:not([open]) { flex: 0 0 auto; }
+/* The box has to fill the fold, or the panel is mostly dead space: a
+   contenteditable is only clickable where its box is, so a short prompt in a
+   tall panel left you with one line's worth of target at the top and nothing
+   under it.
+
+   It stopped filling when browsers shipped ::details-content. The children of
+   an open <details> used to be its flex items; now they are wrapped in that
+   pseudo-element, which is display:block by default — so flex:1 on the box
+   inside had no flex container to grow in and it sat at its own min-height.
+   Making the wrapper the column the fold used to be puts it back.
+
+   Only while open: closed, the fold gives its height back to the rewrite that is
+   actually queued, and the wrapper is hidden by the UA's own content-visibility
+   either way. An engine without the pseudo drops this rule and already works —
+   there the box is a flex item of the fold, which is what it was written as. */
+.mmc-prompt-fold[open]::details-content {
+  display: flex; flex-direction: column; flex: 1; min-height: 0;
+}
 /* No disclosure until there is something standing in for the box: with no
    rewrite this is the prompt, and a prompt does not need announcing. */
 .mmc-prompt-head { display: none; }

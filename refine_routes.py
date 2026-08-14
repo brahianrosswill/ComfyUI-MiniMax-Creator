@@ -217,6 +217,21 @@ def _shot(compiled, text, seconds, continues, show_labels):
     }, images
 
 
+def _target(body):
+    """The refine target, with the retired one read as what it now is.
+
+    `creator` was the lone generation's own target, back when a lone generation
+    was its own node. It is one card of a piece now — the same card the strip
+    refines — so it is read as one rather than kept as a second path that would
+    have to be taught everything the first one learns. Still accepted because a
+    version-1 blob arrives under it from a workflow saved before the merge, and
+    `compile.as_piece` reads that.
+    """
+    if body.get("kind") != "creator":
+        return body
+    return {**body, "kind": "segment", "index": 0}
+
+
 def _plan(body):
     """The request -> (mode, shots, images, piece, single, pool, footage).
 
@@ -236,11 +251,13 @@ def _plan(body):
     if kind not in ("creator", "segment", "timeline"):
         raise compiler.CompileError(f"unknown refine target {kind!r}")
 
-    if kind == "creator":
-        compiled = compiler.compile_request(data, media.image_size)
-        shot, images = _shot(compiled, str(data.get("prompt") or ""),
-                             compiled.seconds, False, True)
-        return compiled.mode, [shot], images, None, False, None, []
+    # Rebound before anything reads it. `timeline_segments` and
+    # `timeline_payloads` lift for themselves, but the piece's own fields are
+    # read straight off this dict further down — and on a version-1 blob the
+    # shot's prompt is sitting where the piece's standing one goes, so a half-
+    # lifted read would hand the model the same sentence twice: once as the
+    # description this card inherits, and once as the card.
+    data = compiler.as_piece(data)
 
     segments = compiler.timeline_segments(data)
     payloads = compiler.timeline_payloads(data, media.image_size)
@@ -523,6 +540,7 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
 
 def _run(body):
     """The blocking half: compile, look, ask, parse. Runs on a thread."""
+    body = _target(body)
     kind = body.get("kind")
     derived, shots, pictures, piece_text, single, pool, footage = _plan(body)
 
@@ -557,14 +575,21 @@ def _run(body):
         for shot in shots:
             shot["mode"] = mode
 
-    # Who divides the video into shots. In the Creator node nothing else does:
-    # there is one card, one duration and no cut times anywhere, so a clip of any
+    # Who divides the video into shots. On a piece of one card nothing else
+    # does: there is one duration and no cut times anywhere, so a clip of any
     # length comes back as a single uncut shot unless the model is asked for the
-    # cuts. A timeline already has them — the cards are the shots and their cut
-    # times are the running sum of the durations the user set — so it is left
-    # alone, and a model moving a cut off the frame the next card starts on is
-    # not a failure mode this can have.
-    cuts = refine.shot_limit(seconds) if kind == "creator" else 0
+    # cuts. A piece of several already has them — the cards are the shots and
+    # their cut times are the running sum of the durations the user set — so it
+    # is left alone, and a model moving a cut off the frame the next card starts
+    # on is not a failure mode this can have.
+    #
+    # Asked off the card count rather than off which node sent this, which is
+    # what it used to be. That was the same question while a lone generation was
+    # its own node; it stopped being the same question the moment a piece could
+    # hold one card, and a one-card strip has been getting no cuts asked for it
+    # ever since.
+    lone = len(compiler.timeline_segments(body.get("data") or {})) == 1
+    cuts = refine.shot_limit(seconds) if lone else 0
 
     # Who owns the global prompt. A whole-timeline refine rewrites it — it is
     # the piece's standing description and the shots are written to inherit

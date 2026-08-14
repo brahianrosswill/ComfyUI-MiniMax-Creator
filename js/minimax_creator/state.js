@@ -271,14 +271,28 @@ export const TURBO_SAMPLER = "euler";
 export const TURBO_SCHEDULER = "beta";
 
 /** Where the row returns to when the switch is thrown off and nothing was
- *  saved — the node's own declared defaults, mirrored from creator_node.py. */
-export const TURBO_RESET = { steps: 20, sampler_name: "res_multistep", scheduler: "simple" };
+ *  saved — the node's own declared defaults, mirrored from creator_node.py.
+ *  The shifts are the checkpoints' own flow schedules; at exactly these
+ *  values the backend emits no shift node at all. */
+export const TURBO_RESET = {
+  steps: 20, sampler_name: "res_multistep", scheduler: "simple",
+  shift_video: 12, shift_audio: 3,
+};
 
-/** The strength the switch engages a file at. The two families were distilled
- *  at different scales and their communities settled on different numbers:
- *  lightx2v's distill runs at ~0.6, larryvrh's at 1.0. A guess off the
- *  filename, and the LoRA manager's slider overrides it like any other entry. */
-export const turboStrength = (name) => (/lightx2v/i.test(name || "") ? 0.6 : 1.0);
+/** What the switch engages a file at — strength and the flow shifts its card
+ *  was distilled against. The two families were distilled at different scales
+ *  and their cards name different schedules: lightx2v's distill runs at ~0.6
+ *  with the video clock at 6, larryvrh's at 1.0 on the checkpoints' own
+ *  schedule. A guess off the filename; the manager's slider and the shift
+ *  pills override it like any other value. */
+export function turboPreset(name) {
+  if (/lightx2v/i.test(name || "")) {
+    return { strength: 0.6, shift_video: 6, shift_audio: 3 };
+  }
+  return { strength: 1.0, shift_video: TURBO_RESET.shift_video, shift_audio: TURBO_RESET.shift_audio };
+}
+
+export const turboStrength = (name) => turboPreset(name).strength;
 
 export function emptyTurbo() {
   return {
@@ -315,6 +329,10 @@ export function parseTurbo(raw) {
         ? raw.saved.sampler_name : TURBO_RESET.sampler_name,
       scheduler: typeof raw.saved.scheduler === "string"
         ? raw.saved.scheduler : TURBO_RESET.scheduler,
+      // Rows saved before the shifts existed restore the defaults, which is
+      // exactly what those rows were running at.
+      shift_video: Number(raw.saved.shift_video) || TURBO_RESET.shift_video,
+      shift_audio: Number(raw.saved.shift_audio) || TURBO_RESET.shift_audio,
     };
   }
   return out;
@@ -762,14 +780,19 @@ export function emptyTimeline() {
     // The turbo switch. Global like the LoRA it engages: a speed-up belongs to
     // the run, not to shot 3.
     turbo: emptyTurbo(),
-    // Empty, and it is the point: a new timeline is a strip with nothing on it
-    // and two ways to start it. An opening card would have to be a shot — there
-    // is nothing else a default could be — and that card was undeletable while
-    // it was the only one, so every piece began with a generation whether or
-    // not it was meant to. `compile.timeline_segments` refuses an empty strip
-    // at queue time, which is the right moment: an empty strip is a piece being
-    // written, not a piece that is wrong.
-    segments: [],
+    // One blank shot, because that is what this node is when you drop it. It
+    // was empty while the strip was a node of its own: a new timeline was a
+    // reel with nothing on it and two equally good ways to begin, and an
+    // opening card would have had to be a shot when a clip was just as likely.
+    //
+    // The merge answers that question for it. A piece of one shot *is* the
+    // Creator — you drop this node to write a video — so the shot is the
+    // default and the clip is the other thing you can do to a strip that
+    // exists. Which also retires the state the old reasoning was protecting
+    // against: the card is not undeletable, it is only unemptyable, and
+    // clearing the last one leaves a blank shot rather than a piece with
+    // nothing in it and a face that can only say so. See `syncCanvas`.
+    segments: [emptySegment()],
   };
 }
 
@@ -779,6 +802,18 @@ export function emptyTimeline() {
  * Stripped again by `serializeTimeline` — the segments do not own it.
  */
 function syncCanvas(timeline) {
+  // A piece is at least one shot, so deleting the last card clears it rather
+  // than emptying the piece. What that removes is a face nobody wanted: a
+  // summary reporting "empty · 0 segments" with a button offering to open a
+  // strip that has nothing on it, reached by doing the ordinary thing of
+  // deleting cards. The node is the Creator, and the Creator with nothing in it
+  // is a blank prompt.
+  //
+  // Here rather than in the delete handler, so a hand-edited blob and a saved
+  // workflow arrive in the same shape as one the strip just emptied. The two
+  // ways to begin a piece are still both offered — they are the add tile beside
+  // the card, which is where they are the rest of the time.
+  if (!timeline.segments.length) timeline.segments.push(emptySegment());
   // A clip is not generated, so it cannot share a generation — neither by
   // being merged into the pass in front of it nor by having a card merged into
   // it. Cleared here rather than guarded at every read, the same way the seam
@@ -870,9 +905,58 @@ function syncCanvas(timeline) {
 
 export { syncCanvas as syncTimeline };
 
+/**
+ * The fields a piece owns and a shot does not — the whole of the old
+ * creator/timeline split, written down as a list. A lone generation kept all of
+ * these inline because it had nowhere else to keep them; a piece holds them once
+ * and every shot on the strip is held to them. `syncCanvas` mirrors the first
+ * five back down, so a segment state still answers `resolved()` on its own.
+ *
+ * Mirrors `compile.PIECE_FIELDS`.
+ */
+export const PIECE_FIELDS = ["aspect", "short_edge", "upscale", "sample_edge",
+                             "refine_denoise", "models", "turbo", "output_prefix"];
+
+/** What only a lone generation ever carried at the top level. Tells a version-1
+ *  `creator_data` blob from a fresh node's "{}" — which is an empty piece and
+ *  must not become a shot nobody wrote. Mirrors `compile._LONE_SHOT_KEYS`. */
+const LONE_SHOT_KEYS = ["prompt", "assets", "loras", "duration_s", "checkpoint",
+                        "refined", "soundscape", "music"];
+
+/**
+ * A version-1 `creator_data` blob, read as the one-shot piece it always was.
+ *
+ * The mirror of `compile.as_piece`, and everything argued there holds here: it
+ * runs on every load of every workflow saved while these were two nodes, it is
+ * the exact inverse of the split `PIECE_FIELDS` names, and the three placements
+ * it gets right are `prompt` and `assets` going *down* to the shot while the
+ * seven piece fields go up.
+ *
+ * Idempotent — a blob that already has a strip is returned untouched.
+ */
+export function asPiece(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed.segments)) return parsed;
+  if (parsed.version !== 1 && !LONE_SHOT_KEYS.some((key) => key in parsed)) return parsed;
+
+  const shot = { ...parsed };
+  delete shot.version;
+  // `models` even when the blob carried none: the empty piece routes to Ref2VA
+  // by preference, and a lone generation that rendered on `auto` must not
+  // quietly change weights by being opened. An empty block parses to auto.
+  const piece = { version: 2, prompt: "", models: {} };
+  for (const field of PIECE_FIELDS) {
+    if (field in shot) {
+      piece[field] = shot[field];
+      delete shot[field];
+    }
+  }
+  piece.segments = [shot];
+  return piece;
+}
+
 export function parseTimeline(raw) {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = asPiece(JSON.parse(raw));
     if (parsed && typeof parsed === "object") {
       const timeline = { ...emptyTimeline(), ...parsed };
       // Workflows saved before either existed have no key at all, and a
@@ -992,6 +1076,12 @@ export function serializeTimeline(timeline) {
     // round-trips exactly as it always did.
     ...(timeline.assets?.length ? { assets: serializeAssets(timeline.assets) } : {}),
     audio_tail_s: clampTail(timeline.audio_tail_s),
+    // Where this node's renders land, when the blob overrides the setting. No
+    // control writes it — it is the hand-edit the README documents as the only
+    // way to have two nodes write to different places — so it is carried
+    // through rather than understood. Dropping it here is what made editing
+    // anything on the node quietly move its output back to the default folder.
+    ...(timeline.output_prefix ? { output_prefix: timeline.output_prefix } : {}),
     ...serializeModels(timeline.models),
     ...serializeTurbo(timeline.turbo),
     segments: timeline.segments.map((segment, index) => {
@@ -1720,16 +1810,6 @@ export function passProblem(timeline, pass) {
       .filter((value) => value && value !== "auto"));
     if (key !== "checkpoint" && (timeline[key] || "").trim()) seen.add((timeline[key] || "").trim());
     if (seen.size > 1) return t("The shots disagree about {what}. One pass has only one.", { what: t(what) });
-  }
-  return null;
-}
-
-/** The first thing wrong with any pass in the strip, or null — for the places
- *  that report about the timeline rather than about one casing. */
-export function timelineProblem(timeline) {
-  for (const pass of passes(timeline)) {
-    const problem = passProblem(timeline, pass);
-    if (problem) return problem;
   }
   return null;
 }
