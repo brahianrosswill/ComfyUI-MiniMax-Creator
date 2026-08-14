@@ -348,6 +348,28 @@ export function thumbUrl(path, version) {
 }
 
 /**
+ * The URL that shows one media file as a still picture, or null for a file that
+ * has none.
+ *
+ * The two routes above answer for different kinds and the choice is not
+ * cosmetic: an image is core's `/view` re-encoded to webp, while a clip has to
+ * come through this pack's thumb route, because an `<img>` pointed at an `.mp4`
+ * renders nothing at all. Audio has no picture and gets an icon from whoever is
+ * drawing.
+ *
+ * One implementation, because every grid in this pack asks the same question —
+ * the picker's cells, the gallery, the preset library's cards. Takes an asset row
+ * as the listing produces it (`{path, kind, mtime}`), which is also the shape
+ * anything storing a reference to one should keep it in.
+ */
+export function stillUrl(asset) {
+  if (!asset?.path) return null;
+  if (asset.kind === "video") return thumbUrl(asset.path, asset.mtime);
+  if (asset.kind === "image") return viewUrl(asset.path, { preview: true });
+  return null;
+}
+
+/**
  * Waveform peaks for the segment editor, normalised to 0..1, or null when there
  * is nothing to draw. Decoded server-side and cached there by mtime.
  */

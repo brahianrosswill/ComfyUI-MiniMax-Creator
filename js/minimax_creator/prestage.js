@@ -871,7 +871,7 @@ export class PreStageBody {
       arch: () => this.state.arch,
       capture: () => ({
         data: P.capturePreStage(this.state, this.widgetIO()),
-        cover: P.coverFromSaved(this.stage?.result?.saved),
+        cover: P.coverFromResult(this.stage?.result),
         defaultName: (this.promptOf() || "").trim().split("\n")[0].slice(0, 48),
       }),
       apply: (body, keys, from) => {

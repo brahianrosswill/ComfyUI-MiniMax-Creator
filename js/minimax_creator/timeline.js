@@ -1825,7 +1825,7 @@ export class TimelineBody {
       label: t("this piece"),
       capture: () => ({
         data: P.capturePiece(this.timeline, this.widgetIO()),
-        cover: P.coverFromSaved(this.stage?.result?.saved),
+        cover: P.coverFromResult(this.stage?.result),
         defaultName: (this.timeline.prompt || this.timeline.segments[0]?.prompt || "")
           .trim().split("\n")[0].slice(0, 48),
       }),

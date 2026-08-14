@@ -20,7 +20,7 @@
 
 import { el, icon, mountOverlay } from "./dom.js";
 import { t } from "./i18n.js";
-import { thumbUrl, viewUrl } from "./api.js";
+import { stillUrl } from "./api.js";
 import { openPicker } from "./picker.js";
 import { BUILTIN } from "./presets/builtin.js";
 import * as P from "./presets.js";
@@ -40,17 +40,6 @@ const SHELF_FAV = "fav";
  */
 export function openPresetLibrary(options) {
   return new Promise((resolve) => new PresetLibrary(options, resolve).mount());
-}
-
-/** The URL for one stored picture. A clip goes through the pack's own thumb
- *  route — a few KB of server-decoded JPEG rather than a video element in a grid
- *  cell — and an image goes through core's /view as a q70 webp. Both take the
- *  ` [output]` annotation a gallery path carries. */
-function pictureUrl(picture) {
-  if (!picture?.path) return null;
-  return picture.kind === "video"
-    ? thumbUrl(picture.path, picture.v)
-    : viewUrl(picture.path, { preview: true });
 }
 
 /** mm:ss, which is how a length is read off a strip. */
@@ -269,18 +258,21 @@ class PresetLibrary {
    * the one before it: a cover, else the pictured lane, else the bare shape.
    */
   renderHero(row) {
-    const cover = pictureUrl(row.cover);
+    const cover = stillUrl(row.cover);
     const hero = el("div", { class: "mmc-preset-hero", "data-cover": cover ? "" : null });
     if (cover) {
       hero.append(el("img", {
-        class: "mmc-preset-cover", src: cover, alt: "", loading: "lazy",
+        class: "mmc-preset-cover",
         // A render since deleted is a 404, and the card falls back to the lane
         // underneath rather than showing a broken picture. The same honest
-        // fallback a missing block has.
+        // fallback a missing block has. Before `src`, because `el` sets props in
+        // order and a listener attached after the request is a listener that can
+        // miss it.
         onerror: (event) => {
           event.target.remove();
           hero.removeAttribute("data-cover");
         },
+        src: cover, alt: "", loading: "lazy",
       }));
     }
     if (row.scope === "prestage") {
@@ -311,7 +303,7 @@ class PresetLibrary {
           "data-clip": block.clip ? "" : null,
           style: { flex: String(block.seconds) },
         });
-        const picture = pictured ? pictureUrl(frames.get(block.at)) : null;
+        const picture = pictured ? stillUrl(frames.get(block.at)) : null;
         if (picture) {
           cell.append(el("img", {
             src: picture, alt: "", loading: "lazy",
@@ -333,7 +325,7 @@ class PresetLibrary {
       "data-clip": row.facts?.clip ? "" : null,
       style: { width: `${Math.round(share * 100)}%` },
     });
-    const picture = pictureUrl((row.frames ?? [])[0]);
+    const picture = stillUrl((row.frames ?? [])[0]);
     if (picture) {
       block.append(el("img", { src: picture, alt: "", loading: "lazy",
                                onerror: (event) => event.target.remove() }));
@@ -348,7 +340,7 @@ class PresetLibrary {
     const [w, h] = String(row.canvas?.aspect ?? row.facts?.aspect ?? "16:9").split(":").map(Number);
     const ratio = w && h ? w / h : 16 / 9;
     const frame = el("span", { style: { width: `${Math.round(84 * ratio)}px` } });
-    const picture = pictureUrl(row.canvas?.picture);
+    const picture = stillUrl(row.canvas?.picture);
     if (picture) {
       frame.append(el("img", { src: picture, alt: "", loading: "lazy",
                                onerror: (event) => event.target.remove() }));
@@ -672,7 +664,9 @@ class PresetLibrary {
     });
     if (!chosen?.length) return;
     const picked = chosen[0];
-    this.setCover(row, { path: picked.path, v: Math.floor(picked.mtime ?? Date.now() / 1000) });
+    // The picker's row *is* the shape a cover is stored in — see
+    // `coverFromResult`. Copied field for field rather than rebuilt.
+    this.setCover(row, { path: picked.path, kind: picked.kind, mtime: picked.mtime });
   }
 
   async setCover(row, cover) {

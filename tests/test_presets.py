@@ -431,9 +431,21 @@ try {
   out.errors.push(`card: ${error.stack}`);
 }
 
+// The cover has to record *which kind* of render it is, not just where it is:
+// a still is served by core's /view as a webp, a clip only by this pack's thumb
+// route. Point an <img> at an .mp4 and it renders nothing at all — which against
+// the hero's near-black reads as a cover that is simply black.
 try {
-  out.cover = P.coverFromSaved({ filename: "H3_00021_.mp4", subfolder: "minimax/renders", type: "output" });
-  out.coverEmpty = P.coverFromSaved(null);
+  out.cover = P.coverFromResult({
+    isImage: false,
+    saved: { filename: "H3_00021_.mp4", subfolder: "minimax/renders", type: "output" },
+  });
+  out.coverStill = P.coverFromResult({
+    isImage: true,
+    saved: { filename: "prestage_00003_.png", subfolder: "minimax/stills", type: "output" },
+  });
+  out.coverEmpty = P.coverFromResult(null);
+  out.coverNoResult = P.coverFromResult({ isImage: false, saved: null });
 } catch (error) {
   out.errors.push(`cover: ${error.stack}`);
 }
@@ -603,7 +615,15 @@ check("a card with a cover collects no block pictures", card.get("framesWithCove
 
 check("a finished render becomes a cover path the thumb route takes",
       (report.get("cover") or {}).get("path"), "minimax/renders/H3_00021_.mp4 [output]")
+# The field the first cut of this left out, and the whole of why covers were black.
+check("...marked as a clip, so it is served by the thumb route and not by /view",
+      (report.get("cover") or {}).get("kind"), "video")
+check("...in the picker's own row shape, so api.stillUrl needs no adapter",
+      sorted((report.get("cover") or {}).keys()), ["kind", "mtime", "path"])
+check("a pre-stage still is marked an image, which /view can serve",
+      (report.get("coverStill") or {}).get("kind"), "image")
 check("...and nothing becomes no cover", report.get("coverEmpty"), None)
+check("...as does a stage that has run but saved nothing", report.get("coverNoResult"), None)
 
 # ---- storage ----------------------------------------------------------------
 

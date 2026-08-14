@@ -500,14 +500,29 @@ export function describe(data, scope, { cover = null } = {}) {
   };
 }
 
-/** A finished render, as a cover. `saved` is what the `executed` message carried
- *  and what `stage.js` is already holding — the same `{filename, subfolder,
- *  type}` shape the gallery listing produces, so the path it builds is a path
- *  the thumb and view routes already take. */
-export function coverFromSaved(saved) {
+/**
+ * A finished render, as a cover.
+ *
+ * Takes the whole of `stage.result` rather than its `saved` half, because the
+ * kind is the half that is not in there: `saved` is the `{filename, subfolder,
+ * type}` shape the gallery listing produces, and whether the render was a clip or
+ * a still is `isImage`, which `stage.js` derives from *which* output key came
+ * back — `mmc_video` or `mmc_image`.
+ *
+ * Stored as `{path, kind, mtime}`: an asset row exactly as the listing route
+ * produces one, so `api.stillUrl` shows it with no adapter and no second opinion
+ * about which route serves what. Everything in this pack that points at a media
+ * file keeps it in that shape, and a cover is not special.
+ */
+export function coverFromResult(result) {
+  const saved = result?.saved;
   if (!saved?.filename) return null;
   const relative = saved.subfolder ? `${saved.subfolder}/${saved.filename}` : saved.filename;
-  return { path: `${relative} [output]`, v: Math.floor(Date.now() / 1000) };
+  return {
+    path: `${relative} [output]`,
+    kind: result.isImage ? "image" : "video",
+    mtime: Math.floor(Date.now() / 1000),
+  };
 }
 
 // ---- apply ------------------------------------------------------------------
