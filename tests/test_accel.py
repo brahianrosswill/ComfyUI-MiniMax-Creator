@@ -29,12 +29,7 @@ accel = importlib.util.module_from_spec(spec)
 sys.modules["mmc.accel"] = accel
 spec.loader.exec_module(accel)
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 def expect_error(label, fn, fragment):
@@ -109,12 +104,58 @@ class FakeSpectrum:
         return (("spectrum", model, tuple(sorted(kwargs.items()))),)
 
 
-def install(*, block_cache=True, spectrum=True):
+class FakeEasyCache:
+    """Core's `EasyCache` required inputs, verbatim from nodes_easycache.py."""
+
+    FUNCTION = "apply"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "reuse_threshold": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 3.0, "step": 0.01}),
+                "start_percent": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "end_percent": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "verbose": ("BOOLEAN", {"default": False}),
+            },
+        }
+
+    def apply(self, model, **kwargs):
+        return (("easycache", model, tuple(sorted(kwargs.items()))),)
+
+
+class FakeTeaCache:
+    """`MiniMaxH3TeaCache.INPUT_TYPES`, verbatim from the pack."""
+
+    FUNCTION = "apply"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "rel_l1_thresh": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "start_step": ("INT", {"default": 2, "min": 0, "max": 1000}),
+                "end_step": ("INT", {"default": -2, "min": -1000, "max": 1000}),
+                "total_steps": ("INT", {"default": 20, "min": 1, "max": 1000}),
+            },
+        }
+
+    def apply(self, model, **kwargs):
+        return (("teacache", model, tuple(sorted(kwargs.items()))),)
+
+
+def install(*, block_cache=True, spectrum=True, easycache=True, teacache=True):
     NODES.NODE_CLASS_MAPPINGS = {}
     if block_cache:
         NODES.NODE_CLASS_MAPPINGS[accel.BLOCK_CACHE_NODE] = FakeBlockCache
     if spectrum:
         NODES.NODE_CLASS_MAPPINGS[accel.SPECTRUM_NODE] = FakeSpectrum
+    if easycache:
+        NODES.NODE_CLASS_MAPPINGS[accel.EASYCACHE_NODE] = FakeEasyCache
+    if teacache:
+        NODES.NODE_CLASS_MAPPINGS[accel.TEACACHE_NODE] = FakeTeaCache
 
 
 class FakeGraph:
@@ -180,6 +221,44 @@ check("spectrum blend is overridable", accel.plan(accel.Settings(spectrum=True, 
 check("spectrum keeps the pack's tuning", (kwargs["degree"], kwargs["warmup_steps"], kwargs["max_history"]), (1, 1, 8))
 check("spectrum sends no optional inputs", "history_storage" in kwargs, False)
 
+# ---- the other two cache implementations ------------------------------------
+
+install()
+easy = accel.plan(accel.Settings(block_cache="easy"))
+check("easy plans core's EasyCache", easy[0][0], accel.EASYCACHE_NODE)
+check("easy keeps core's own tuning",
+      (easy[0][1]["reuse_threshold"], easy[0][1]["start_percent"]), (0.2, 0.15))
+
+tea = accel.plan(accel.Settings(block_cache="tea"), sampler_steps=8)
+check("tea plans the TeaCache node", tea[0][0], accel.TEACACHE_NODE)
+check("tea keeps the pack's threshold and window",
+      (tea[0][1]["rel_l1_thresh"], tea[0][1]["start_step"], tea[0][1]["end_step"]),
+      (0.15, 2, -2))
+check("tea is told the run's real step count", tea[0][1]["total_steps"], 8)
+check("tea falls back to the pack's own step default",
+      accel.plan(accel.Settings(block_cache="tea"))[0][1]["total_steps"], 20)
+
+# One cache at a time: the widget is one axis, so a plan never holds two.
+for mode in ("safe", "fast", "aggressive", "easy", "tea"):
+    planned = [n for n, _ in accel.plan(accel.Settings(block_cache=mode))]
+    check(f"'{mode}' plans exactly one cache node", len(planned), 1)
+
+expect_error("easy + spectrum is refused by name",
+             lambda: accel.plan(accel.Settings(block_cache="easy", spectrum=True)),
+             "EasyCache")
+expect_error("a mode this build does not know is refused",
+             lambda: accel.plan(accel.Settings(block_cache="fancy")),
+             "unknown cache mode")
+
+install(teacache=False)
+expect_error("missing teacache pack names the repo",
+             lambda: accel.plan(accel.Settings(block_cache="tea")),
+             "Icyoung/ComfyUI-MiniMaxH3-TeaCache")
+install(easycache=False)
+expect_error("a core without EasyCache says to update",
+             lambda: accel.plan(accel.Settings(block_cache="easy")),
+             "update ComfyUI")
+
 # ---- ordering ---------------------------------------------------------------
 
 both = accel.Settings(block_cache="fast", spectrum=True)
@@ -233,7 +312,4 @@ check("direct_apply chains both packs in order",
       (result[0], result[1][0]), ("spectrum", "block_cache"))
 check("direct_apply is a no-op when off", accel.direct_apply("MODEL", accel.Settings()), "MODEL")
 
-if FAILURES:
-    print("\n".join(FAILURES))
-    raise SystemExit(f"{len(FAILURES)} failure(s)")
-print("all accelerator tests passed")
+passed("all accelerator tests passed")

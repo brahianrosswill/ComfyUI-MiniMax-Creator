@@ -72,6 +72,14 @@ and picking one without the pack refuses up front naming it.
 > reconstruction. The weights pill will not auto-fill it as a video VAE, but it
 > will let you pick it, so read the filename.
 
+Two machine notes. fp8 checkpoints only *speed up* sampling on cards with
+hardware fp8 matmul (RTX 40-series and later); on older cards they still halve
+the memory and change nothing else. And recent ComfyUI streams weights with
+Dynamic VRAM by default — if a long render dies with a
+`HostBuffer.read_file_slice` CUDA OOM, start ComfyUI with
+`--disable-dynamic-vram` (a known core regression as of August 2026,
+[#15255](https://github.com/Comfy-Org/ComfyUI/issues/15255)).
+
 ## Attaching things
 
 Type `@` anywhere in the prompt. The menu lists what is already attached first, then
@@ -155,8 +163,13 @@ re-reads everything, which is what to press after editing a sidecar by hand.
 
 **turbo** on the sampler row is a switch, not a preset: it adds a distillation LoRA
 (larryvrh's `minimax_h3_turbo_v4_step600_ema`, the lightx2v 4-step distill, or
-Kijai's conversions), moves the sampler to euler + beta, and drops the steps to
-4 / 6 / 8. Switching it off puts all of it back.
+Kijai's conversions), moves the sampler to euler + beta, drops the steps to
+4 / 6 / 8, and sets the two **shift** pills to the schedule the picked LoRA's
+card was distilled against (the lightx2v distill runs the video clock at 6;
+larryvrh's keeps the checkpoints' own 12/3). Switching it off puts all of it
+back. The shift pills are ordinary controls the rest of the time — H3 samples
+picture and sound on two flow clocks, and at the default 12/3 the graph carries
+no shift node at all.
 
 ## Refine
 
@@ -432,9 +445,14 @@ This pack is glue. The work underneath it belongs to other people:
 - **[Comfy Org](https://github.com/comfyanonymous/ComfyUI)** — H3 lives in core;
   this node only drives it.
 - **[ComfyUI-Spectrum-MiniMax-H3](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3)**
-  by xmarre and
+  by xmarre,
   **[ComfyUI-MiniMaxH3-FirstBlockCache](https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache)**
-  by duckyshell — the two accelerator pills on the sampler row.
+  by duckyshell and
+  **[ComfyUI-MiniMaxH3-TeaCache](https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache)**
+  by Icyoung — the accelerator pills on the sampler row. The cache pill also
+  offers core's own EasyCache (`easy`), which needs nothing installed. One
+  cache at a time; all of them trade fidelity for speed, so A/B against a
+  native render before trusting one on a final piece.
 - **[ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)** by Kijai — gives the
   live preview a real decoder. Kijai's turbo conversions are in the switch too.
 - **[ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU)** by pollockjj —

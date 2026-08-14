@@ -1,11 +1,20 @@
 """Optional sampling accelerators, wired in rather than reimplemented.
 
-Two community packs make H3 substantially faster and neither is ours:
+Four accelerators make H3 substantially faster and none of them is ours:
 
 - **FirstBlockCache** (`ComfyUI-MiniMaxH3-FirstBlockCache`) skips the rest of the
   DiT when the first block's residual barely moved between steps.
+- **EasyCache** (core's `nodes_easycache.py`) reuses whole cached steps when the
+  model's output is barely moving — the no-install option on the same axis.
+- **TeaCache** (`ComfyUI-MiniMaxH3-TeaCache`) skips transformer forwards on
+  timestep-similarity, through core's own `set_model_unet_function_wrapper`.
 - **Spectrum** (`ComfyUI-Spectrum-MiniMax-H3`) forecasts features across steps
   instead of evaluating every one of them.
+
+The first three are one axis — each skips or reuses steps of the same forward,
+so running two at once would cache a cache — and share the `cache` widget.
+Spectrum is a different idea and its own switch; its README rules out exactly
+one pairing (EasyCache), which is refused by name.
 
 Both are MODEL patchers: model in, patched model out, everything else unchanged.
 That is the whole reason this module can be twenty lines of wiring — there is no
@@ -36,20 +45,29 @@ node can take the same settings later without this module changing.
 from dataclasses import dataclass
 
 BLOCK_CACHE_NODE = "ApplyMiniMaxH3FirstBlockCache"
+EASYCACHE_NODE = "EasyCache"
+TEACACHE_NODE = "MiniMaxH3TeaCache"
 SPECTRUM_NODE = "SpectrumApplyMiniMaxH3"
 
 # Where to get each pack, named in the error rather than in a README nobody is
-# reading at the moment the node fails.
+# reading at the moment the node fails. EasyCache ships with ComfyUI itself, so
+# missing means the install predates it.
 SOURCES = {
     BLOCK_CACHE_NODE: "https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache",
+    TEACACHE_NODE: "https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache",
+    EASYCACHE_NODE: "ComfyUI core (comfy_extras/nodes_easycache.py) — update ComfyUI",
     SPECTRUM_NODE: "https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3",
 }
 
-# What the node's `block_cache` widget offers. The values are matched against the
-# *installed* pack's mode list by prefix, because its labels carry the threshold
-# in them ("H3 Fast — 0.10 / max 2") and would break this the first time one is
-# retuned. "off" is not a mode: it means the node is never built.
-BLOCK_CACHE_MODES = ["off", "safe", "fast", "aggressive"]
+# What the node's `block_cache` widget offers — one step-caching accelerator at
+# a time, whichever implementation. The FirstBlockCache presets are matched
+# against the *installed* pack's mode list by prefix, because its labels carry
+# the threshold in them ("H3 Fast — 0.10 / max 2") and would break this the
+# first time one is retuned. "off" is not a mode: it means no cache node is
+# ever built. "easy" is core's EasyCache at its own defaults; "tea" is the
+# TeaCache pack at its card's defaults, told the run's real step count.
+BLOCK_CACHE_MODES = ["off", "safe", "fast", "aggressive", "easy", "tea"]
+_FBC_MODES = ("safe", "fast", "aggressive")
 
 
 @dataclass(frozen=True)
@@ -133,36 +151,53 @@ def _spectrum_kwargs(node, blend):
     return kwargs
 
 
-def plan(settings):
+def plan(settings, sampler_steps=None):
     """`[(node_id, kwargs), ...]` in the order they must be applied.
 
     Shared by both entry points so the graph path and the direct path cannot
     drift apart on ordering or arguments — the difference between them is only
-    how a node gets run, never which nodes or with what.
+    how a node gets run, never which nodes or with what. `sampler_steps` is the
+    run's real step count, which TeaCache needs to place its skip window.
     """
+    if settings.block_cache == "easy" and settings.spectrum:
+        raise ValueError(
+            "Spectrum cannot be combined with EasyCache — its own conflict "
+            "check refuses the pair. Pick one, or switch the cache to another "
+            "implementation.")
     steps = []
-    if settings.block_cache != "off":
+    if settings.block_cache in _FBC_MODES:
         node = _require(BLOCK_CACHE_NODE)
         steps.append((BLOCK_CACHE_NODE, _block_cache_kwargs(node, settings.block_cache)))
+    elif settings.block_cache == "easy":
+        steps.append((EASYCACHE_NODE, node_defaults(_require(EASYCACHE_NODE))))
+    elif settings.block_cache == "tea":
+        kwargs = node_defaults(_require(TEACACHE_NODE))
+        if sampler_steps is not None:
+            kwargs["total_steps"] = int(sampler_steps)
+        steps.append((TEACACHE_NODE, kwargs))
+    elif settings.block_cache != "off":
+        raise ValueError(
+            f"unknown cache mode {settings.block_cache!r} — "
+            f"this build offers {BLOCK_CACHE_MODES}")
     if settings.spectrum:
         node = _require(SPECTRUM_NODE)
         steps.append((SPECTRUM_NODE, _spectrum_kwargs(node, settings.spectrum_blend)))
     return steps
 
 
-def graph_apply(graph, model, settings):
+def graph_apply(graph, model, settings, sampler_steps=None):
     """Patch a MODEL *link* inside a `GraphBuilder` subgraph. Returns the new link.
 
     For the nodes that return an expanded graph rather than tensors. With both
     accelerators off this returns `model` untouched and adds nothing to the
     graph — an unused node is still a node ComfyUI has to cache and schedule.
     """
-    for node_id, kwargs in plan(settings):
+    for node_id, kwargs in plan(settings, sampler_steps):
         model = graph.node(node_id, model=model, **kwargs).out(0)
     return model
 
 
-def direct_apply(model, settings):
+def direct_apply(model, settings, sampler_steps=None):
     """Patch a real MODEL object. Returns the patched model.
 
     The Creator node's half of the same contract: it holds a loaded model rather
@@ -170,7 +205,7 @@ def direct_apply(model, settings):
     kept beside `graph_apply` deliberately — the two are one decision, and
     splitting them across a later commit is how they stop agreeing.
     """
-    for node_id, kwargs in plan(settings):
+    for node_id, kwargs in plan(settings, sampler_steps):
         node = _require(node_id)
         model = getattr(node(), node.FUNCTION)(model=model, **kwargs)[0]
     return model
