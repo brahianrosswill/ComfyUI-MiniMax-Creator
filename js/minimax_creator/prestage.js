@@ -26,7 +26,7 @@ import { openFrameGrab } from "./framegrab.js";
 import { openChoicePopover, stepperPill, aspectGlyph, edgeSlider, PILL_GLYPH } from "./pills.js";
 import { CreatorEditor } from "./editor.js";
 import { openEditorSheet } from "./prompt.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { loadCatalog, catalogByFolder } from "./models.js";
 import { viewUrl } from "./api.js";
@@ -127,17 +127,9 @@ export class PreStageEditor {
     else this.render();
   }
 
+  /** See `sampling.widgetIO`. */
   widgetIO() {
-    return {
-      value: (name, fallback) => this.samplingWidgets?.[name]?.value ?? fallback,
-      set: (name, value) => {
-        const widget = this.samplingWidgets?.[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
-        this.onWidgetChange?.();
-      },
-    };
+    return widgetIO(() => this.samplingWidgets, () => this.onWidgetChange?.());
   }
 
   commit() {
@@ -797,17 +789,9 @@ export class PreStageBody {
     return editor;
   }
 
+  /** See `sampling.widgetIO`. */
   widgetIO() {
-    return {
-      value: (name, fallback) => this.samplingWidgets?.[name]?.value ?? fallback,
-      set: (name, value) => {
-        const widget = this.samplingWidgets?.[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
-        this.onWidgetChange?.();
-      },
-    };
+    return widgetIO(() => this.samplingWidgets, () => this.onWidgetChange?.());
   }
 
   // ---- the model pill --------------------------------------------------------

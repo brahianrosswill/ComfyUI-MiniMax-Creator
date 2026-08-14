@@ -20,7 +20,7 @@ import { openTrim, trimLabel } from "./trim.js";
 import { PromptBox, focusEnd, openEditorSheet } from "./prompt.js";
 import { RefinePanel, refineButton, refine } from "./refine.js";
 import { openAspectPopover, openResolutionPopover, aspectGlyph, PILL_GLYPH } from "./pills.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as Turbo from "./turbo.js";
@@ -231,7 +231,12 @@ export class CreatorEditor {
 
     // The weights pill needs the file lists to say anything useful, and every
     // node body on the canvas shares the one request.
-    if (this.nodeId) loadCatalog(() => this.adoptWeights());
+    //
+    // Only when this editor owns the piece. Handed one — the face of a piece of
+    // one shot — the owner is already watching the catalog for the same weights
+    // block, and two watchers guess at it twice and redraw twice for the one
+    // answer.
+    if (this.nodeId && this.piece === this.state) loadCatalog(() => this.adoptWeights());
 
     this.prompt.setValue(this.state.prompt ?? "");
     this.render();
@@ -257,20 +262,9 @@ export class CreatorEditor {
   }
 
 
-  /** The sampler widgets as turbo.js wants them: write-through without the
-   *  re-render, because everything that uses this commits — and renders — once
-   *  at the end rather than three times along the way. */
+  /** See `sampling.widgetIO`. */
   widgetIO() {
-    return {
-      value: (name, fallback) => this.samplingWidgets?.[name]?.value ?? fallback,
-      set: (name, value) => {
-        const widget = this.samplingWidgets?.[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
-        this.onWidgetChange?.();
-      },
-    };
+    return widgetIO(() => this.samplingWidgets, () => this.onWidgetChange?.());
   }
 
   commit() {

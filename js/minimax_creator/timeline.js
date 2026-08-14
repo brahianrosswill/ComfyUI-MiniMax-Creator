@@ -18,7 +18,7 @@ import { openSettings } from "./settings.js";
 import { openTrim } from "./trim.js";
 import { openAspectPopover, openResolutionPopover, openChoicePopover, stepperPill, aspectGlyph, PILL_GLYPH } from "./pills.js";
 import { refine, refineButton, chosenModel as refineModel } from "./refine.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as S from "./state.js";
@@ -1744,20 +1744,9 @@ export class TimelineBody {
     return widget ? widget.value : fallback;
   }
 
-  /** The sampler widgets as turbo.js wants them: write-through without the
-   *  re-render, because everything that uses this commits — and renders — once
-   *  at the end rather than three times along the way. */
+  /** See `sampling.widgetIO`. */
   widgetIO() {
-    return {
-      value: (name, fallback) => this.value(name, fallback),
-      set: (name, value) => {
-        const widget = this.widgets[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
-        this.onWidgetChange?.();
-      },
-    };
+    return widgetIO(() => this.widgets, () => this.onWidgetChange?.());
   }
 
   /** Write through to the real widget, callback included — some of them (the

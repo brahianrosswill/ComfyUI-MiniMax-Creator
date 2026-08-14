@@ -31,6 +31,40 @@ const BLOCK_CACHE_TITLE = {
 };
 
 /**
+ * Read and write the real widgets, by name.
+ *
+ * The `{value, set}` pair every body hands this row and `turbo.js` — the one
+ * thing all three node bodies had a character-for-character copy of, differing
+ * only in what they called the map they were holding. Here rather than on a
+ * shared base class, because that is all they had in common: their `commit`,
+ * `destroy` and `adoptWeights` are three different jobs that happen to share
+ * three names, and a base class holding one function would have bought that
+ * function at the price of a hierarchy.
+ *
+ * No re-render on write. Everything that uses this commits — and renders — once
+ * at the end rather than three times along the way; a body that wants the
+ * redraw does it in its own `set`.
+ *
+ * @param {() => object} widgets  name -> real ComfyUI widget. A thunk because a
+ *   body may be handed its widgets after it is built.
+ * @param {() => void} [onChange] the node needs redrawing on the canvas
+ */
+export function widgetIO(widgets, onChange) {
+  return {
+    value: (name, fallback) => widgets()?.[name]?.value ?? fallback,
+    set: (name, value) => {
+      const widget = widgets()?.[name];
+      if (!widget) return;
+      widget.value = value;
+      // Some of them — the seed's after-generate control — hang behaviour off
+      // the callback rather than off the value, so it is not optional.
+      widget.callback?.(value);
+      onChange?.();
+    },
+  };
+}
+
+/**
  * @param {object} options
  * @param {object} options.widgets           name -> real ComfyUI widget
  * @param {(name, fallback) => any} options.value
