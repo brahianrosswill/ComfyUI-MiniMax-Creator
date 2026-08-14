@@ -271,14 +271,28 @@ export const TURBO_SAMPLER = "euler";
 export const TURBO_SCHEDULER = "beta";
 
 /** Where the row returns to when the switch is thrown off and nothing was
- *  saved — the node's own declared defaults, mirrored from creator_node.py. */
-export const TURBO_RESET = { steps: 20, sampler_name: "res_multistep", scheduler: "simple" };
+ *  saved — the node's own declared defaults, mirrored from creator_node.py.
+ *  The shifts are the checkpoints' own flow schedules; at exactly these
+ *  values the backend emits no shift node at all. */
+export const TURBO_RESET = {
+  steps: 20, sampler_name: "res_multistep", scheduler: "simple",
+  shift_video: 12, shift_audio: 3,
+};
 
-/** The strength the switch engages a file at. The two families were distilled
- *  at different scales and their communities settled on different numbers:
- *  lightx2v's distill runs at ~0.6, larryvrh's at 1.0. A guess off the
- *  filename, and the LoRA manager's slider overrides it like any other entry. */
-export const turboStrength = (name) => (/lightx2v/i.test(name || "") ? 0.6 : 1.0);
+/** What the switch engages a file at — strength and the flow shifts its card
+ *  was distilled against. The two families were distilled at different scales
+ *  and their cards name different schedules: lightx2v's distill runs at ~0.6
+ *  with the video clock at 6, larryvrh's at 1.0 on the checkpoints' own
+ *  schedule. A guess off the filename; the manager's slider and the shift
+ *  pills override it like any other value. */
+export function turboPreset(name) {
+  if (/lightx2v/i.test(name || "")) {
+    return { strength: 0.6, shift_video: 6, shift_audio: 3 };
+  }
+  return { strength: 1.0, shift_video: TURBO_RESET.shift_video, shift_audio: TURBO_RESET.shift_audio };
+}
+
+export const turboStrength = (name) => turboPreset(name).strength;
 
 export function emptyTurbo() {
   return {
@@ -315,6 +329,10 @@ export function parseTurbo(raw) {
         ? raw.saved.sampler_name : TURBO_RESET.sampler_name,
       scheduler: typeof raw.saved.scheduler === "string"
         ? raw.saved.scheduler : TURBO_RESET.scheduler,
+      // Rows saved before the shifts existed restore the defaults, which is
+      // exactly what those rows were running at.
+      shift_video: Number(raw.saved.shift_video) || TURBO_RESET.shift_video,
+      shift_audio: Number(raw.saved.shift_audio) || TURBO_RESET.shift_audio,
     };
   }
   return out;
@@ -1792,16 +1810,6 @@ export function passProblem(timeline, pass) {
       .filter((value) => value && value !== "auto"));
     if (key !== "checkpoint" && (timeline[key] || "").trim()) seen.add((timeline[key] || "").trim());
     if (seen.size > 1) return t("The shots disagree about {what}. One pass has only one.", { what: t(what) });
-  }
-  return null;
-}
-
-/** The first thing wrong with any pass in the strip, or null — for the places
- *  that report about the timeline rather than about one casing. */
-export function timelineProblem(timeline) {
-  for (const pass of passes(timeline)) {
-    const problem = passProblem(timeline, pass);
-    if (problem) return problem;
   }
   return null;
 }

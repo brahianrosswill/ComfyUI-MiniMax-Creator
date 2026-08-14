@@ -20,14 +20,17 @@ export const SEED_CONTROL = ["fixed", "increment", "decrement", "randomize"];
 // once as the stock widget underneath.
 export const SAMPLING_WIDGETS = [
   "seed", "control_after_generate", "steps", "cfg", "sampler_name", "scheduler",
+  "shift_video", "shift_audio",
   "block_cache", "spectrum", "spectrum_blend",
 ];
 
 const BLOCK_CACHE_TITLE = {
-  off: "FirstBlockCache is off.",
+  off: "Step caching is off.",
   safe: "FirstBlockCache, safest preset — fewest skipped steps.",
   fast: "FirstBlockCache, the pack's recommended preset.",
   aggressive: "FirstBlockCache, most skipping — fastest, furthest from a native render.",
+  easy: "EasyCache — core's own step reuse, nothing to install. Cannot be combined with Spectrum.",
+  tea: "TeaCache — skips transformer forwards on timestep similarity. Needs ComfyUI-MiniMaxH3-TeaCache.",
 };
 
 /**
@@ -152,6 +155,27 @@ export function samplingBar({ widgets, value, set, perSegment = false, turbo = [
         onPick: (picked) => set(name, picked),
       }),
     }, [el("span", { text: String(widget.value) })]));
+  }
+
+  // The flow shifts, H3's two clocks. Drawn as one compact stepper pair after
+  // the scheduler because they are schedule too: the checkpoints' own values
+  // by default, reset by the turbo switch to what the picked LoRA's card
+  // names, and honest about which track a wrong value ruins first.
+  if (widgets.shift_video) {
+    pills.push(stepperPill({
+      value: Number(value("shift_video", 12)), min: 0.01, max: 100, step: 0.5, width: "48px",
+      title: t("The video flow shift. 12 is the checkpoints' own schedule; a turbo LoRA's card may name another."),
+      format: (n) => t("shift {n}", { n: +n.toFixed(2) }),
+      onChange: (next) => set("shift_video", next),
+    }));
+  }
+  if (widgets.shift_audio) {
+    pills.push(stepperPill({
+      value: Number(value("shift_audio", 3)), min: 0.01, max: 100, step: 0.5, width: "48px",
+      title: t("The audio flow shift. 3 is the checkpoints' own schedule. A wrong one distorts the soundtrack before it touches the picture."),
+      format: (n) => t("audio {n}", { n: +n.toFixed(2) }),
+      onChange: (next) => set("shift_audio", next),
+    }));
   }
 
   // The accelerators. Off is the default and reads as off — an unlit pill —

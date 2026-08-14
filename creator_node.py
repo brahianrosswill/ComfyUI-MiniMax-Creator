@@ -129,11 +129,23 @@ def _schema(node_id, display_name, blob, deprecated=False):
             io.Combo.Input("scheduler", options=comfy.samplers.KSampler.SCHEDULERS,
                            default="simple",
                            tooltip="The templates use 'simple'; for reference-heavy prompts they suggest 'beta' or 'normal' instead."),
+            # H3 runs the picture and the sound on separate flow schedules,
+            # and the defaults here are the checkpoints' own — at exactly
+            # these values no shift node is emitted, so an untouched row
+            # renders exactly as it always has. Turbo LoRA cards name the
+            # schedule they were distilled against; the turbo switch sets
+            # these with the rest of the row and puts them back on release.
+            io.Float.Input("shift_video", default=render.SHIFT_DEFAULTS[0],
+                min=0.01, max=100.0, step=0.01,
+                tooltip="The video flow shift. 12 is the checkpoints' own value; a turbo LoRA's card may name another."),
+            io.Float.Input("shift_audio", default=render.SHIFT_DEFAULTS[1],
+                min=0.01, max=100.0, step=0.01,
+                tooltip="The audio flow shift. 3 is the checkpoints' own value. A wrong one distorts the soundtrack before it touches the picture."),
             # Both accelerators are other people's nodes and both are off
             # until asked for — see `accel.py`. They patch the model, so they
             # cost nothing to leave off and nothing here reimplements them.
             io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off",
-                tooltip="FirstBlockCache: skip the rest of the DiT on steps where the first block barely moved. 'fast' is the pack's recommended preset. Needs ComfyUI-MiniMaxH3-FirstBlockCache."),
+                tooltip="Step caching, one implementation at a time. safe/fast/aggressive are FirstBlockCache presets (needs ComfyUI-MiniMaxH3-FirstBlockCache); 'easy' is core's EasyCache; 'tea' is TeaCache (needs ComfyUI-MiniMaxH3-TeaCache). All trade fidelity for speed — A/B before trusting one on a final render."),
             io.Boolean.Input("spectrum", default=False,
                 tooltip="Spectrum: forecast features across steps instead of evaluating every one. Needs ComfyUI-Spectrum-MiniMax-H3. Combines with block_cache; cannot be combined with EasyCache."),
             io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01,
@@ -161,7 +173,9 @@ def _fingerprint(blob):
 
 
 def _render(blob, seed, steps, cfg, sampler_name, scheduler,
-            block_cache, spectrum, spectrum_blend, unique_id):
+            block_cache, spectrum, spectrum_blend, unique_id,
+            shift_video=render.SHIFT_DEFAULTS[0],
+            shift_audio=render.SHIFT_DEFAULTS[1]):
     """The whole of what either node id does. See the module docstring."""
     try:
         data = compiler.as_piece(json.loads(blob))
@@ -181,7 +195,8 @@ def _render(blob, seed, steps, cfg, sampler_name, scheduler,
         payloads, labels,
         models.Weights.from_blob(data),
         render.Sampling(seed=seed, steps=steps, cfg=cfg,
-                        sampler_name=sampler_name, scheduler=scheduler),
+                        sampler_name=sampler_name, scheduler=scheduler,
+                        shift_video=shift_video, shift_audio=shift_audio),
         accel.Settings(block_cache=block_cache, spectrum=spectrum,
                        spectrum_blend=spectrum_blend),
         unique_id,
@@ -204,9 +219,12 @@ class MiniMaxH3Creator(io.ComfyNode):
 
     @classmethod
     def execute(cls, creator_data, seed, steps, cfg, sampler_name, scheduler,
-                block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
+                block_cache="off", spectrum=False, spectrum_blend=0.5,
+                shift_video=render.SHIFT_DEFAULTS[0],
+                shift_audio=render.SHIFT_DEFAULTS[1]) -> io.NodeOutput:
         return _render(creator_data, seed, steps, cfg, sampler_name, scheduler,
-                       block_cache, spectrum, spectrum_blend, cls.hidden.unique_id)
+                       block_cache, spectrum, spectrum_blend, cls.hidden.unique_id,
+                       shift_video=shift_video, shift_audio=shift_audio)
 
 
 class MiniMaxH3Timeline(io.ComfyNode):
@@ -240,9 +258,12 @@ class MiniMaxH3Timeline(io.ComfyNode):
 
     @classmethod
     def execute(cls, timeline_data, seed, steps, cfg, sampler_name, scheduler,
-                block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
+                block_cache="off", spectrum=False, spectrum_blend=0.5,
+                shift_video=render.SHIFT_DEFAULTS[0],
+                shift_audio=render.SHIFT_DEFAULTS[1]) -> io.NodeOutput:
         return _render(timeline_data, seed, steps, cfg, sampler_name, scheduler,
-                       block_cache, spectrum, spectrum_blend, cls.hidden.unique_id)
+                       block_cache, spectrum, spectrum_blend, cls.hidden.unique_id,
+                       shift_video=shift_video, shift_audio=shift_audio)
 
 
 class MiniMaxCreatorExtension(ComfyExtension):

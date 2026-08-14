@@ -73,6 +73,13 @@ SAVE_NODE = "MiniMaxH3Save"
 FILENAME_PREFIX = outputs.VIDEO_PREFIX
 
 
+# The H3 checkpoints' own flow shifts — `MiniMaxH3Model.__init__`'s
+# `sigma_shift_video` / `sigma_shift_audio` defaults. At exactly these values
+# no shift node is emitted, so a graph whose pills were never touched stays
+# byte-identical to what this pack always built.
+SHIFT_DEFAULTS = (12.0, 3.0)
+
+
 @dataclass(frozen=True)
 class Sampling:
     """The sampler settings both nodes expose under the same widget names."""
@@ -82,6 +89,11 @@ class Sampling:
     cfg: float = 1.0
     sampler_name: str = "res_multistep"
     scheduler: str = "simple"
+    shift_video: float = SHIFT_DEFAULTS[0]
+    shift_audio: float = SHIFT_DEFAULTS[1]
+
+    def shifted(self):
+        return (self.shift_video, self.shift_audio) != SHIFT_DEFAULTS
 
 
 @dataclass(frozen=True)
@@ -203,7 +215,7 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
     # pack is not installed, a request that cannot compile, or weights that were
     # never picked should say so before anything is queued rather than after the
     # first segment has sampled.
-    accel.plan(acceleration)
+    accel.plan(acceleration, sampling.steps)
     # Before compiling, and before the payloads become segment cache keys: a
     # standing route is the same statement the per-request pin makes, said once
     # for every generation instead of once per generation.
@@ -301,11 +313,21 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
         # skipped outright, so there is nothing here worth a socket on the node.
         against = graph.node("ConditioningZeroOut", conditioning=segment.out(1)).out(0)
 
+        # The flow shifts, only when they leave the checkpoint's own values:
+        # a turbo LoRA's card names the schedule it was distilled against, and
+        # this is where the pills reach the run. Core's node on both sides of
+        # the 2026-08-13 split, so there is no version to gate on.
+        model = segment.out(0)
+        if sampling.shifted():
+            model = graph.node(
+                "MiniMaxH3SigmaShift", model=model,
+                shift_video=sampling.shift_video,
+                shift_audio=sampling.shift_audio).out(0)
         # After the segment node, which is where the LoRAs are patched on — both
         # packs want to sit between the model patches and the sampler, and
         # FirstBlockCache refuses to run downstream of another DiT block
-        # replacement. Off, this is `segment.out(0)` unchanged.
-        model = accel.graph_apply(graph, segment.out(0), acceleration)
+        # replacement. Off, this is the segment's model unchanged.
+        model = accel.graph_apply(graph, model, acceleration, sampling.steps)
         # Last patch before the sampler: it wraps OUTER_SAMPLE, so it wants to be
         # outside the accelerators rather than under them. Adds nothing when the
         # pack is absent or no decoder was picked.
@@ -347,7 +369,13 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             # decoder sit in the same places.
             refine_against = graph.node(
                 "ConditioningZeroOut", conditioning=second.out(1)).out(0)
-            refine_model = accel.graph_apply(graph, second.out(0), acceleration)
+            refine_model = second.out(0)
+            if sampling.shifted():
+                refine_model = graph.node(
+                    "MiniMaxH3SigmaShift", model=refine_model,
+                    shift_video=sampling.shift_video,
+                    shift_audio=sampling.shift_audio).out(0)
+            refine_model = accel.graph_apply(graph, refine_model, acceleration, sampling.steps)
             refine_model = models.graph_preview(graph, refine_model, weights)
             sampled = graph.node(
                 REFINE_NODE,

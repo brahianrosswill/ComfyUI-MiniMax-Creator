@@ -61,12 +61,7 @@ cn = importlib.import_module(f"{PACKAGE}.creator_node")
 accel_mod = importlib.import_module(f"{PACKAGE}.accel")
 outputs_mod = importlib.import_module(f"{PACKAGE}.outputs")
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check
 
 
 def expect_error(label, fn, fragment):
@@ -170,6 +165,22 @@ check("frames are read back only where a seam needs them",
       len(by_type["MiniMaxH3PassFrames"]), 1)
 check("no negative connected means one zero-out per segment",
       len(by_type["ConditioningZeroOut"]), 3)
+
+# The flow shifts. At the checkpoints' own schedule no node is emitted at all,
+# so an untouched row builds the same graph it always has; off it, one shift
+# node patches each pass's model on its way to the sampler.
+check("the default schedule emits no shift node", "MiniMaxH3SigmaShift" in by_type, False)
+shifted = {}
+for node_id, node in build(shift_video=6.0).expand.items():
+    shifted.setdefault(node["class_type"], []).append((node_id, node["inputs"]))
+check("an off-default video shift emits one shift node per generation",
+      len(shifted.get("MiniMaxH3SigmaShift", [])), 3)
+check("...carrying both clocks",
+      {(i["shift_video"], i["shift_audio"]) for _, i in shifted.get("MiniMaxH3SigmaShift", [])},
+      {(6.0, 3.0)})
+shift_ids = {node_id for node_id, _ in shifted.get("MiniMaxH3SigmaShift", [])}
+check("each sampler runs on the shifted model",
+      all(i["model"][0] in shift_ids for _, i in shifted.get("KSampler", [])), True)
 
 def in_order(nodes, order):
     """The segment nodes sorted by which of `order`'s prompts they carry."""
@@ -617,10 +628,16 @@ class _FakeVae:
 
 guides = encoder_mod._context_keyframes(_FakeVae(7), _torch.zeros(22, 64, 64, 3), 22)
 check("22 frames become 7 per-step guide blocks", len(guides), 7)
-check("every block passes the stock constructor a legal anchor",
-      {g["resolved_frame_index"] for g in guides}, {0})
-check("the real positions follow the (1,4,4,4,4) temporal grid",
-      [g[payload_mod.FRAME_INDEX_KEY] for g in guides], [0, 1, 5, 9, 13, 17, 18])
+if payload_mod.CORE_ANCHORS_ANYWHERE:
+    check("every block anchors natively on the (1,4,4,4,4) temporal grid",
+          [g["resolved_frame_index"] for g in guides], [0, 1, 5, 9, 13, 17, 18])
+    check("no block carries the old-core repositioning key",
+          any(payload_mod.FRAME_INDEX_KEY in g for g in guides), False)
+else:
+    check("every block passes the stock constructor a legal anchor",
+          {g["resolved_frame_index"] for g in guides}, {0})
+    check("the real positions follow the (1,4,4,4,4) temporal grid",
+          [g[payload_mod.FRAME_INDEX_KEY] for g in guides], [0, 1, 5, 9, 13, 17, 18])
 try:
     encoder_mod._context_keyframes(_FakeVae(6), _torch.zeros(22, 64, 64, 3), 22)
     FAILURES.append("a coverage mismatch should refuse to render, got no error")
@@ -910,10 +927,3 @@ expect_error("a clip cannot be merged into a pass",
              lambda: with_clip({"prompt": "a", "duration_s": 5},
                                {**CLIP, "merge": True}),
              "cannot share a generation")
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all timeline graph tests passed")
