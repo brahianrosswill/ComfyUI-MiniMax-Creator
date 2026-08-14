@@ -42,12 +42,7 @@ def _load_payload():
 
 repair = _load_payload()
 
-FAILURES = []
-
-
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
+from harness import FAILURES, check, passed
 
 
 TEXT_LEN = 7
@@ -149,9 +144,4 @@ built = repair._rebuild({
 check("cond_video_latents is keyframes then reference images",
       built, ["kf1", "kf2", "ref1"])
 
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print(f"  - {failure}")
-    sys.exit(1)
-print("all payload-repair tests passed")
+passed("all payload-repair tests passed")

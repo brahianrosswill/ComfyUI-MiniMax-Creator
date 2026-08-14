@@ -17,7 +17,7 @@ import math
 
 import node_helpers
 from comfy.ldm.minimax.model import FRAME_PER_TOKEN
-from .payload import AUDIO_END_KEY, FRAME_INDEX_KEY
+from .payload import AUDIO_END_KEY, CORE_ANCHORS_ANYWHERE, FRAME_INDEX_KEY
 from comfy_extras.nodes_minimax_h3 import (
     CANVAS_MULTIPLE,
     FPS,
@@ -56,6 +56,20 @@ NEXT_FRAME = "__next__"
 NEXT_AUDIO = "__next_audio__"
 
 
+def _pin(keyframe, index, stock=0):
+    """Pin a guide at pixel `index` of the target's own timeline.
+
+    A core with the general anchor (`CORE_ANCHORS_ANYWHERE`) takes the index
+    directly and places it right even with references in the layout. An older
+    core accepts only frame 0 and the last frame, so the entry passes the
+    nearest legal `stock` anchor and carries the real index for `payload.py`
+    to write in.
+    """
+    if CORE_ANCHORS_ANYWHERE:
+        return {"resolved_frame_index": index, **keyframe}
+    return {"resolved_frame_index": stock, FRAME_INDEX_KEY: index, **keyframe}
+
+
 def _frames_covered(steps):
     """Pixel frames the first `steps` latent steps of a video encode cover."""
     return sum(FRAME_PER_TOKEN[k % 5] for k in range(steps))
@@ -66,9 +80,7 @@ def _context_keyframes(vae, tail, feather, at=0):
 
     One video-VAE call over the whole tail — the motion lives inside the
     temporal compression — then one guide block per latent step, each pinned
-    at the pixel offset that step's content starts at. The stock layout
-    constructor accepts only frame 0, so every block passes it that and
-    carries its real position for `payload.py` to write in.
+    (`_pin`) at the pixel offset that step's content starts at.
 
     `at` is where the run starts on this segment's timeline: 0 for the run
     inherited from the pass in front, and `frames - feather` for the opening of
@@ -101,11 +113,8 @@ def _context_keyframes(vae, tail, feather, at=0):
             f"covering {covered} frames — the video VAE's temporal grid no "
             f"longer matches the seam's. Refusing to render a shifted join."
         )
-    return [{
-        "resolved_frame_index": 0,
-        FRAME_INDEX_KEY: at + _frames_covered(k),
-        "latent": encoded[:, :, k:k + 1],
-    } for k in range(steps)]
+    return [_pin({"latent": encoded[:, :, k:k + 1]}, at + _frames_covered(k))
+            for k in range(steps)]
 
 
 def _seam_audio(audio_vae, audio, ends_at=None):
@@ -165,17 +174,19 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
     See `payload.py` for the one core line that has to be worked around to send
     it alongside a keyframe.
 
-    Every keyframe here carries its real pixel index under `FRAME_INDEX_KEY`,
-    including the ones stock would place correctly. A sound seam is a
-    `ref_audio` block, and a reference block advances the cursor the target
-    clip then starts at — so the moment sound crosses a seam, stock's "frame 0"
-    lands `ref_audio_t` time units *before* the clip's opening rather than on
-    it, and the model reads the inherited frame as something from a second ago
-    instead of as this clip's first frame. Keyed rows are repositioned onto the
-    target's own origin by `payload.py`; with no references in the layout the
-    rewrite reproduces stock's arithmetic exactly, so nothing that was already
-    right moves. `_encode_references` has keyed its seam for the same reason
-    since references existed — this is the same repair on the FL2VA road.
+    Every keyframe here is pinned (`_pin`) at its real pixel index, including
+    the ones an old core's stock arithmetic would place correctly. A sound
+    seam is a `ref_audio` block, and a reference block advances the cursor the
+    target clip then starts at — so the moment sound crosses a seam, old
+    stock's "frame 0" lands `ref_audio_t` time units *before* the clip's
+    opening rather than on it, and the model reads the inherited frame as
+    something from a second ago instead of as this clip's first frame. A core
+    with the general anchor counts from the target's own origin natively; on
+    an older one the keyed rows are repositioned there by `payload.py`, whose
+    rewrite reproduces stock's arithmetic exactly when no references are in
+    the layout, so nothing that was already right moves. `_encode_references`
+    has pinned its seam for the same reason since references existed — this is
+    the same repair on the FL2VA road.
     """
     latent, frame_count = _empty_av_latent(compiled.width, compiled.height, compiled.frames)
 
@@ -195,14 +206,13 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
         if compiled.feather > 1:
             keyframes.extend(_context_keyframes(vae, tail[-compiled.feather:], compiled.feather))
         else:
-            keyframes.append({"resolved_frame_index": 0, FRAME_INDEX_KEY: 0,
-                              "image": tail[-1:]})
+            keyframes.append(_pin({"image": tail[-1:]}, 0))
     elif compiled.first_frame is not None:
         # Geometry anchor: plain stretch, because the canvas was derived from
         # this image's own aspect ratio and already matches it.
         image = _resize(loaded[compiled.first_frame.handle]["image"], compiled.width, compiled.height, "disabled")
         images.append(image)
-        keyframes.append({"resolved_frame_index": 0, FRAME_INDEX_KEY: 0, "image": image})
+        keyframes.append(_pin({"image": image}, 0))
 
     if compiled.last_frame is not None:
         # Follower: cover-crop onto whatever canvas the first frame established.
@@ -211,8 +221,7 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
         crop = "center" if (compiled.first_frame is not None or compiled.continues) else "disabled"
         image = _resize(loaded[compiled.last_frame.handle]["image"], compiled.width, compiled.height, crop)
         images.append(image)
-        keyframes.append({"resolved_frame_index": frame_count - 1,
-                          FRAME_INDEX_KEY: frame_count - 1, "image": image})
+        keyframes.append(_pin({"image": image}, frame_count - 1, stock=frame_count - 1))
     elif compiled.ends_on:
         # The supplied clip this segment runs into, opening where this one
         # ends. Cover-cropped like any follower — the clip is conformed to the
@@ -233,8 +242,7 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
                 vae, head[:compiled.ends_feather], compiled.ends_feather,
                 at=frame_count - compiled.ends_feather))
         else:
-            keyframes.append({"resolved_frame_index": frame_count - 1,
-                              FRAME_INDEX_KEY: frame_count - 1, "image": head[:1]})
+            keyframes.append(_pin({"image": head[:1]}, frame_count - 1, stock=frame_count - 1))
 
     seam_audio = _seam_blocks(audio_vae, compiled, loaded, frame_count) \
         if compiled.encodes_audio() else []
@@ -403,19 +411,18 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded):
         cond = node_helpers.conditioning_set_values(cond, {"minimax_refs": blocks})
 
     if compiled.continues:
-        # The seam alongside references — the combination core's node surface
-        # stops short of. The inherited frames ride as pinned guides with
-        # their real positions under FRAME_INDEX_KEY: with references in the
-        # layout the target clip no longer starts where stock computes keyframe
-        # anchors, so even the classic single-frame seam is keyed and
-        # repositioned by `payload.py`, which also rebuilds the latent list the
-        # reference branch of core's `extra_conds` overwrites.
+        # The seam alongside references — a combination old core's node
+        # surface stops short of. The inherited frames ride as guides pinned
+        # at their real positions: with references in the layout the target
+        # clip no longer starts where old stock computes keyframe anchors, so
+        # even the classic single-frame seam is pinned — natively on a core
+        # with the general anchor, via `payload.py` on an older one, which
+        # also rebuilds the latent list that core's `extra_conds` overwrites.
         tail = _resize(loaded[PREV_FRAME]["image"], compiled.width, compiled.height, "center")
         if compiled.feather > 1:
             keyframes = _context_keyframes(vae, tail[-compiled.feather:], compiled.feather)
         else:
-            keyframes = [{"resolved_frame_index": 0, FRAME_INDEX_KEY: 0,
-                          "latent": vae.encode(tail[-1:])}]
+            keyframes = [_pin({"latent": vae.encode(tail[-1:])}, 0)]
         cond = node_helpers.conditioning_set_values(cond, {
             "minimax_keyframes": keyframes,
             "minimax_frame_count": frame_count,
