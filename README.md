@@ -25,8 +25,13 @@ That is the whole workflow. Drop the node, type, run.
 Under the prompt there is a stretch of unexposed film — **Write the next shot**.
 Click it and the piece has two shots instead of one, the strip opens on the new
 one, and the node's face becomes the timeline described [below](#more-than-one-shot).
-Delete cards back down to one and the face comes back. There is no mode to pick
-and nothing to switch: one shot or twenty, it is the same node and the same blob.
+Delete cards back down to one and the face comes back. There is no mode to pick:
+one shot or twenty, it is the same node and the same blob.
+
+The **Timeline** pill shows the piece without adding a shot — the standing prompt
+every shot inherits, the reference pool, and the LoRAs patched onto all of them.
+Click it again to go back to the shot. It is a view, not a setting: nothing about
+the render changes, and the choice is saved with the node rather than in the blob.
 
 ## Install
 

@@ -32,6 +32,43 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# ---- the stylesheet is one template literal per file ------------------------
+#
+# Every module under js/minimax_creator/styles/ is `export const css = ` and then
+# the whole stylesheet, so one stray backtick — in a comment, around a property
+# name, anywhere — closes the literal early and the rest of the file parses as
+# JavaScript. What that costs is not the rule: it is the module, and with it the
+# extension, and with that every node body on the canvas.
+#
+# The run below already catches it, as an import stack twenty frames deep with
+# nothing in it about backticks. This says which file and which line.
+
+STYLES = os.path.join(ROOT, "js", "minimax_creator", "styles")
+stray = []
+for name in sorted(os.listdir(STYLES)):
+    if not name.endswith(".js"):
+        continue
+    inside = False
+    with open(os.path.join(STYLES, name), encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            # The header comment above the literal says the rule and so contains
+            # the very characters it is about. Only what is inside counts.
+            if line.strip() == "export const css = `":
+                inside = True
+                continue
+            if line.strip() == "`;":
+                inside = False
+                continue
+            if inside and ("`" in line or "${" in line):
+                stray.append(f"{name}:{number}: {line.strip()[:70]}")
+if stray:
+    print("a stylesheet has a backtick or ${} outside its delimiters — the module "
+          "will not parse:")
+    for line in stray:
+        print("  -", line)
+    sys.exit(1)
+
+
 if shutil.which("node") is None:
     print("skipped: node is not installed")
     sys.exit(0)
@@ -598,6 +635,58 @@ try {
     })(),
   };
 
+  // ---- the piece-view toggle ----
+  //
+  // A piece holds things a shot does not — the standing prompt, the reference
+  // pool, the LoRAs on every shot — and while it has one shot none of them has
+  // anywhere to be shown. Without a way to the strip face they would not be
+  // reachable at all: you would need a second shot before you could set the
+  // standing prompt the second shot is for.
+  const pieced = (pinned, segments) => {
+    const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+      version: 2, models: {}, segments,
+    }));
+    node.properties = pinned ? { mmc_face_piece: true } : {};
+    return node;
+  };
+  const find = (root, cls) => {
+    let hit = null;
+    const walk = (n) => {
+      if (!hit && String(n.className ?? "").split(" ").includes(cls)) hit = n;
+      (n.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hit;
+  };
+
+  const off = pieced(false, [{ ...shot }]);
+  await ext.nodeCreated(off);
+  const on = pieced(true, [{ ...shot }]);
+  await ext.nodeCreated(on);
+  const many = pieced(false, [{ ...shot }, { ...shot }]);
+  await ext.nodeCreated(many);
+
+  // Clicking it on the shot face pins the piece view; the pin is a node
+  // property rather than anything in the blob, which the render never reads.
+  const blobBefore = off.widgets.find((w) => w.name === "creator_data").value;
+  find(off.mmcBody.root, "mmc-piece-toggle")?.listeners?.click?.[0]?.();
+  out.pieceView = {
+    shotFaceOffers: !!find(off.mmcBody.root, "mmc-piece-toggle"),
+    pinnedWears: on.mmcBody.editor ? "shot" : "strip",
+    stripFaceOffersWayBack: !!find(on.mmcBody.root, "mmc-piece-toggle"),
+    // Nothing to go back to once there are two shots, so no control claiming so.
+    manyShotsHideIt: !find(many.mmcBody.root, "mmc-piece-toggle"),
+    clickPinned: off.properties.mmc_face_piece === true,
+    clickSwitchedFace: off.mmcBody.editor ? "shot" : "strip",
+    blobUntouched: off.widgets.find((w) => w.name === "creator_data").value === blobBefore,
+    // ...and clicking it again comes back, leaving the property as it found it.
+    backAgain: (() => {
+      find(on.mmcBody.root, "mmc-piece-toggle")?.listeners?.click?.[0]?.();
+      return { wears: on.mmcBody.editor ? "shot" : "strip",
+               pinGone: !("mmc_face_piece" in on.properties) };
+    })(),
+  };
+
   // ---- and growing one into a strip ----
   //
   // The face must not mutate behind the user: the shot they wrote becomes card
@@ -781,6 +870,22 @@ for name, what in [("globalPrompt", "a standing prompt"),
 check("two shots wear the strip", faces.get("twoShots"), {"wears": "strip", "grow": False})
 check("a piece of one supplied clip wears the strip — there is no shot to show",
       faces.get("oneClip"), {"wears": "strip", "grow": False})
+
+# The piece-view toggle: the only way to the piece's own controls while the
+# piece is one shot, and the way back once you are there.
+view = report.get("pieceView", {})
+check("the shot face offers the toggle", view.get("shotFaceOffers"), True)
+check("pinned, one shot wears the strip", view.get("pinnedWears"), "strip")
+check("...and offers the way back", view.get("stripFaceOffersWayBack"), True)
+check("two shots hide it — there is no shot face to go back to",
+      view.get("manyShotsHideIt"), True)
+check("clicking it pins the node, not the blob", view.get("clickPinned"), True)
+check("...switches the face", view.get("clickSwitchedFace"), "strip")
+check("...and writes nothing the render reads", view.get("blobUntouched"), True)
+check("clicking it again comes back to the shot",
+      (view.get("backAgain") or {}).get("wears"), "shot")
+check("...leaving the property as it found it",
+      (view.get("backAgain") or {}).get("pinGone"), True)
 
 grew = report.get("grew", {})
 check("writing the next shot adds a card", grew.get("cards"), 2)

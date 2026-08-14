@@ -340,6 +340,19 @@ export const css = `
 .mmc-tl-add-pair .mmc-tl-add span:first-child { font-size: 15px; }
 .mmc-tl-add-clip { border-style: solid; }
 
+/* The piece-view toggle: which face this node is wearing while it holds one
+   shot. Amber, because that is the strip's colour everywhere else in here — the
+   lane's ticks, the pass casing, the cut marks — and pointedly not the
+   accelerator blue the generic aria-pressed rule above would otherwise give it.
+   Blue in this pack means "this render is not native", and a control that only
+   decides what you are looking at has nothing to say about the render.
+
+   Three classes, so it beats that rule wherever the two land in the cascade. */
+.mmc-pill.mmc-piece-toggle.on {
+  border-color: rgba(240,166,60,.45); color: var(--mmc-accent);
+}
+.mmc-pill.mmc-piece-toggle.on:hover:not(:disabled) { border-color: var(--mmc-accent); }
+
 /* --- the stretch after the shot ------------------------------------------- */
 /* Where a piece of one shot grows a second one. The same perforation rail the
    leader wears, one card later and meaning the same thing: film that has not

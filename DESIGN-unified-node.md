@@ -32,8 +32,22 @@ single-shot face   ⟸  segments.length === 1
                       && no global prompt
                       && no pool assets
                       && no global LoRAs
+                      && no soundscape or music
+                      && not pinned to the piece view
 strip face         ⟸  anything else
 ```
+
+Plus one pin. A piece of one shot can be shown either way, and a **Timeline**
+toggle on the pill row says which — kept in `node.properties`, not in the blob,
+because it is a preference about this node and not something the render reads.
+
+That toggle is not a convenience. Without it the piece-level fields are
+*unreachable*: the standing prompt, the reference pool and the global LoRAs can
+only be set on the strip face, and the only other way to the strip face is to
+set one of them. You would need a second shot before you could write the
+standing description the second shot is for. The pin only ever adds the strip —
+it cannot take one away — so the guarantee below is not something a preference
+can switch off.
 
 The three extra clauses are what make it safe rather than merely tidy. A one-card
 piece that carries a global prompt has something the single-shot face cannot
@@ -166,6 +180,10 @@ there isn't one.
   where the other one is.
 - **No lane on the single-shot face.** One shot's lane is one block, which says
   nothing that the pills do not.
+- **No second toggle for the way back.** The **Timeline** pill is one control
+  with two states, in the same place and with the same word on both faces —
+  the shape `pre-stage` already has. Two opposite buttons would be two controls
+  for one question.
 - **No transition animation on the face swap.** The modal opening *is* the
   transition. Motion in this package is `.12s ease` on background and border and
   nothing else; a face that slid would be the one animated thing in the pack.

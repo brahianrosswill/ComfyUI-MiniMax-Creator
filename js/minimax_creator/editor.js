@@ -66,6 +66,15 @@ export class CreatorEditor {
    *   says this editor owns the weights rather than inheriting them.
    */
   /**
+   * @param {{shown: () => boolean, toggle: () => void}} [options.pieceView]
+   *   the piece-view toggle, supplied only for the face of a piece of one shot.
+   *   A piece holds things a shot does not — the standing prompt, the reference
+   *   pool, the LoRAs on every shot — and while there is one shot none of them
+   *   has anywhere to be shown, so without this they cannot be set at all: you
+   *   would need a second shot to reach the controls that make the first one
+   *   part of a piece.
+   */
+  /**
    * @param {{active: () => boolean, toggle: () => void}} [options.preStage]
    *   the pre-stage pill's wiring, supplied only for a node body: whether a
    *   PreStage currently claims this node, and spawning/removing one. The state
@@ -110,7 +119,7 @@ export class CreatorEditor {
   constructor({ state, onCommit, canvasPills = true, continuePill = false,
                 refineTarget = null, onRefined = null, onReverted = null,
                 samplingWidgets = null, onWidgetChange = null, nodeId = null,
-                routeOf = null, setRoute = null, preStage = null,
+                routeOf = null, setRoute = null, preStage = null, pieceView = null,
                 durationPill = true, extraPills = null, extraTools = null,
                 settingsTool = true, stage = null, editorTitle = null,
                 piece = null, afterPanel = null }) {
@@ -121,6 +130,7 @@ export class CreatorEditor {
     // it for what it makes rather than for the control that opened it.
     this.editorTitle = editorTitle ?? t("Shot");
     this.preStage = preStage;
+    this.pieceView = pieceView;
     this.durationPill = durationPill;
     this.settingsTool = settingsTool;
     this.extraPills = extraPills;
@@ -989,8 +999,25 @@ export class CreatorEditor {
       // The output folder is the timeline's for the same reason — one file.
       ...(this.canvasPills ? [aspectPill, resPill] : []),
       this.renderRouting(currentMode),
+      ...(this.pieceView ? [this.renderPieceViewPill()] : []),
       ...(this.preStage ? [this.renderPreStagePill()] : []),
     ]);
+  }
+
+  /** The piece-view toggle. See `options.pieceView` — it is the only way to the
+   *  piece's own controls while the piece is one shot, and the way back once
+   *  you are there. */
+  renderPieceViewPill() {
+    const on = this.pieceView.shown();
+    return el("button", {
+      class: `mmc-pill mmc-piece-toggle${on ? " on" : ""}`,
+      "aria-pressed": on ? "true" : "false",
+      title: on
+        ? t("Showing the whole piece. Click to go back to the shot.")
+        : t("Show the whole piece: the standing prompt every shot inherits, the "
+          + "reference pool, and the LoRAs patched onto all of them."),
+      onclick: () => this.pieceView.toggle(),
+    }, [icon("timeline", 16), el("span", { text: t("Timeline") })]);
   }
 
   /** The pre-stage pill: an image-generation node at this node's left edge,

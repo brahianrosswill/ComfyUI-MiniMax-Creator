@@ -48,6 +48,29 @@ const SPAWN_GAP = 28;
 // seeds the new node from here, so closing the pre-stage discards nothing.
 const STASH = "mmc_prestage_stash";
 
+// Whether this node's face is pinned to the piece rather than to its one shot.
+// A property for the same reason the stash is one: it rides the workflow JSON
+// for free, and it is a preference about *this node on this canvas* rather than
+// anything the render reads — the blob is a strict whitelist compile.py parses
+// at queue time, and a view preference has no business in what gets queued.
+//
+// Only meaningful while the piece has one shot. Past that the strip is the only
+// face that can show the piece, so nothing reads this.
+const FACE_PIN = "mmc_face_piece";
+
+/** What the body's piece-view toggle writes through. */
+const faceControls = (node) => ({
+  pinned: () => node.properties?.[FACE_PIN] === true,
+  pin: (on) => {
+    node.properties = node.properties || {};
+    if (on) node.properties[FACE_PIN] = true;
+    // Deleted rather than set false, so a node that never left its shot saves
+    // exactly the JSON it always did.
+    else delete node.properties[FACE_PIN];
+    node.graph?.setDirtyCanvas(true, true);
+  },
+});
+
 const nodeById = (graph, id) =>
   (graph?._nodes ?? []).find((n) => String(n.id) === String(id)) ?? null;
 
@@ -276,6 +299,7 @@ app.registerExtension({
         // renumbered after it is built, and the stage matches previews by id.
         nodeId: () => node.id,
         preStage: preStageControls(node),
+        face: faceControls(node),
       }));
     } else if (node.comfyClass === PRESTAGE) {
       node.mmcBody = attach(node, (widget) => {

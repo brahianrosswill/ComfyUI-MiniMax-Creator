@@ -1521,14 +1521,19 @@ class Timeline {
  * pills only read and write `widget.value`, exactly as the JSON blob does.
  */
 export class TimelineBody {
-  /** `preStage` is the pre-stage pill's wiring — see minimax_creator.js. */
-  constructor({ read, write, widgets = {}, onWidgetChange, nodeId, preStage = null }) {
+  /** `preStage` and `face` are wiring the node supplies — see minimax_creator.js.
+   *  `face` is where the piece-view pin is kept, which is a preference about
+   *  this node rather than anything the render reads, so it lives on the node
+   *  and not in the blob. */
+  constructor({ read, write, widgets = {}, onWidgetChange, nodeId,
+                preStage = null, face = null }) {
     this.read = read;
     this.write = write;
     this.widgets = widgets;
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
     this.preStage = preStage;
+    this.face = face;
     this.timeline = S.parseTimeline(read());
     // The face's editor, when the piece is one shot and the face is wearing
     // one. Null the rest of the time — see `loneShot`.
@@ -1601,6 +1606,23 @@ export class TimelineBody {
    * A supplied clip is not a shot. A piece of one clip has no generation to put
    * on the face at all, so it keeps the strip.
    */
+  /**
+   * Which face this node is actually wearing.
+   *
+   * The content rule below decides what the face *can* be; this is what it is.
+   * A piece of one shot can be shown either way and the pin says which — asked
+   * for, because a piece holds things a shot does not and there would otherwise
+   * be no way to reach them: you would need a second shot before you could set
+   * the standing prompt that the second shot is for.
+   *
+   * The pin only ever adds the strip. It cannot take one away, so the guarantee
+   * the content rule makes — that a face never hides a field it still queues —
+   * is not something a preference can switch off.
+   */
+  showsStrip() {
+    return !this.loneShot() || !!this.face?.pinned();
+  }
+
   loneShot() {
     const piece = this.timeline;
     return piece.segments.length === 1
@@ -1616,6 +1638,17 @@ export class TimelineBody {
    *  match `PreStageBody.editor`: both are a body that sometimes *is* a
    *  `CreatorEditor` and sometimes holds one. */
   get editor() { return this.faceEditor; }
+
+  /** The piece-view toggle's wiring, for whichever face is drawing it. Null when
+   *  the piece has more than one shot: there is no shot face for it to go back
+   *  to, so a control offering one would be a lie. */
+  pieceView() {
+    if (!this.face || !this.loneShot()) return null;
+    return {
+      shown: () => this.showsStrip(),
+      toggle: () => { this.face.pin(!this.face.pinned()); this.render(); },
+    };
+  }
 
   dropFaceEditor() {
     this.faceEditor?.destroy();
@@ -1656,6 +1689,7 @@ export class TimelineBody {
       stage: this.stage,
       setRoute: (route) => { this.timeline.models.route = route; this.commit(); },
       preStage: this.preStage,
+      pieceView: this.pieceView(),
       // One card of a piece, refined against the piece — the same target the
       // strip gives a card, because that is what this is. The route knows a
       // piece of one segment has no cut times of its own and asks the model for
@@ -1764,7 +1798,7 @@ export class TimelineBody {
     // One shot wears its own editor; anything more wears the strip's summary.
     // Which of them, on every render, off `loneShot` — there is no mode stored
     // anywhere and nothing to get out of step with the piece.
-    if (this.loneShot()) {
+    if (!this.showsStrip()) {
       const editor = this.faceBody();
       editor.render();
       // The editor's root *is* the body here — it brings its own rail, panel
@@ -1972,9 +2006,24 @@ export class TimelineBody {
           title: t("Open the timeline: the global prompt, the segments, and what happens between them"),
           onclick: () => this.open(),
         }, [icon("sliders", 16), el("span", { text: t("Edit timeline") })]),
+        ...(this.pieceView() ? [this.renderPieceViewPill()] : []),
         ...(this.preStage ? [this.renderPreStagePill()] : []),
       ]),
     ]);
+  }
+
+  /** The way back to the shot, on the strip face. Drawn only while there is one
+   *  shot to go back to — see `pieceView`. Deliberately the pill the shot face
+   *  draws, in the same place and with the same words: one control with two
+   *  states, not two controls that happen to be opposites. */
+  renderPieceViewPill() {
+    const view = this.pieceView();
+    return el("button", {
+      class: "mmc-pill mmc-piece-toggle on",
+      "aria-pressed": "true",
+      title: t("Showing the whole piece. Click to go back to the shot."),
+      onclick: () => view.toggle(),
+    }, [icon("timeline", 16), el("span", { text: t("Timeline") })]);
   }
 
   /**
