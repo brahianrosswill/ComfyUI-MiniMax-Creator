@@ -106,10 +106,29 @@ class Node {
   remove() {}
   normalize() {}
   contains() { return false; }
+  /** Enough of a selector match for `PromptBox.claim`, which asks whether a
+   *  click landed on something that answers for itself. Tag names and single
+   *  class names only — the one selector it is given is a list of those. */
+  matches(selector) {
+    return selector.split(",").map((s) => s.trim()).some((one) => {
+      if (one.startsWith(".")) return String(this.className).split(" ").includes(one.slice(1));
+      if (one.startsWith("[")) return one.slice(1, -1) in this.attrs;
+      return this.tagName?.toLowerCase() === one;
+    });
+  }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matches?.(selector)) return node;
+      node = node.parent;
+    }
+    return null;
+  }
+  focus() { globalThis.document.activeElement = this; }
+  blur() { if (globalThis.document.activeElement === this) globalThis.document.activeElement = null; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
   getBoundingClientRect() { return { top: 0, left: 0, width: 100, height: 100, bottom: 0, right: 0 }; }
-  focus() {}
   scrollIntoView() {}
   get firstChild() { return this.children[0] ?? null; }
   get childNodes() { return this.children; }
@@ -635,6 +654,51 @@ try {
     })(),
   };
 
+  // ---- the panel is the writing area ----
+  //
+  // A contenteditable is only clickable where its box is, and its box is the
+  // text's slot rather than the panel around it — so the panel's padding and
+  // the gaps between its rows looked like somewhere to write and were not.
+  // Clicking one of them now puts the caret at the end. Controls and the pill
+  // row keep their own clicks.
+  {
+    const node = fakeNode("MiniMaxH3Creator", "creator_data", JSON.stringify({
+      version: 2, models: {}, segments: [{ ...shot }],
+    }));
+    await ext.nodeCreated(node);
+    const first = (root, cls) => {
+      let hit = null;
+      const walk = (n) => {
+        if (!hit && String(n.className ?? "").split(" ").includes(cls)) hit = n;
+        (n.children ?? []).forEach(walk);
+      };
+      walk(root);
+      return hit;
+    };
+    const box = first(node.mmcBody.root, "mmc-prompt");
+    const panel = first(node.mmcBody.root, "mmc-panel");
+    const down = (target) => {
+      document.activeElement = null;
+      target.listeners?.pointerdown?.forEach((fn) => fn({
+        target, preventDefault() {}, stopPropagation() {},
+      }));
+      // Dispatched on the panel too, the way a real bubble would reach it.
+      if (target !== panel) {
+        panel.listeners?.pointerdown?.forEach((fn) => fn({
+          target, preventDefault() {}, stopPropagation() {},
+        }));
+      }
+      return document.activeElement === box;
+    };
+    out.claim = {
+      panelItself: down(panel),
+      // The pill row is a region of the panel that is not the writing area.
+      pills: down(first(node.mmcBody.root, "mmc-pills")),
+      // ...and so is anything that answers a click for itself.
+      aButton: down(first(node.mmcBody.root, "mmc-pill")),
+    };
+  }
+
   // ---- the piece-view toggle ----
   //
   // A piece holds things a shot does not — the standing prompt, the reference
@@ -870,6 +934,13 @@ for name, what in [("globalPrompt", "a standing prompt"),
 check("two shots wear the strip", faces.get("twoShots"), {"wears": "strip", "grow": False})
 check("a piece of one supplied clip wears the strip — there is no shot to show",
       faces.get("oneClip"), {"wears": "strip", "grow": False})
+
+# The panel is the writing area, not just the box inside it.
+claim = report.get("claim", {})
+check("clicking the panel's dead space puts the caret in the box",
+      claim.get("panelItself"), True)
+check("...but the pill row keeps its own clicks", claim.get("pills"), False)
+check("...and so does a control", claim.get("aButton"), False)
 
 # The piece-view toggle: the only way to the piece's own controls while the
 # piece is one shot, and the way back once you are there.

@@ -230,7 +230,7 @@ export class CreatorEditor {
       this.loraHost,
       // `frame`, not `root`: the box brings its own disclosure, which folds it
       // away once a rewrite is what gets queued.
-      el("div", { class: "mmc-panel" }, [
+      this.panel = el("div", { class: "mmc-panel" }, [
         ...(this.onFace ? [this.expandHost] : []),
         this.prompt.frame, this.refinePanel.root, this.pillsHost,
       ]),
@@ -238,6 +238,10 @@ export class CreatorEditor {
       this.growHost,
       this.samplingHost,
     ]);
+
+    // The whole panel is the writing area, not just the box inside it — see
+    // `PromptBox.claim`.
+    this.prompt.claim(this.panel);
 
     // The weights pill needs the file lists to say anything useful, and every
     // node body on the canvas shares the one request.

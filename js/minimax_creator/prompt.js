@@ -63,6 +63,12 @@ export function focusEnd(element) {
   selection?.addRange(range);
 }
 
+// What a click belongs to instead of to the prompt: a control that answers for
+// itself, and the two regions of the panel that are not the writing area — the
+// pill row and the rewrite below it, which has boxes of its own.
+const NOT_THE_PROMPT =
+  "button, input, select, textarea, a, summary, [contenteditable], .mmc-pills, .mmc-refined";
+
 export class PromptBox {
   /**
    * @param {object} hooks
@@ -124,6 +130,37 @@ export class PromptBox {
     this.frame.open = true;
     this.frame.addEventListener("toggle", () => this.syncExcerpt());
     this.frame.addEventListener("pointerdown", (event) => event.stopPropagation());
+  }
+
+  /**
+   * Treat an element's dead space as part of the box.
+   *
+   * A contenteditable is only clickable where its box is, and its box is the
+   * text's slot rather than the panel it sits in — so the panel's own padding
+   * and the gaps between its rows look like the writing area and are not. A
+   * click landing on one of them did nothing at all, which reads as a dead
+   * node rather than as a near miss.
+   *
+   * The box itself is not involved: it stops its own pointerdown, so anything
+   * arriving here is outside it and the caret goes to the end, which is where
+   * someone clicking past the text is asking to write. Controls and the panel's
+   * other regions are left alone — see `NOT_THE_PROMPT`.
+   *
+   * This is also the belt to the layout's braces. The box fills its slot again
+   * (see the `::details-content` rule in styles/editor.js) and it should; this
+   * is what means a future engine getting that wrong costs a few pixels of
+   * padding rather than the whole panel.
+   */
+  claim(element) {
+    element.addEventListener("pointerdown", (event) => {
+      // Nothing to focus while a rewrite stands in for the box: it is folded
+      // away, and pulling the caret into a hidden box would be a click that
+      // scrolls the panel for no reason.
+      if (!this.frame.open) return;
+      if (event.target.closest(NOT_THE_PROMPT)) return;
+      event.preventDefault();
+      focusEnd(this.root);
+    });
   }
 
   // ---- value <-> DOM -------------------------------------------------------

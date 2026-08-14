@@ -117,13 +117,16 @@ export class PreStageEditor {
       this.railHost,
       this.assetsHost,
       this.loraHost,
-      el("div", { class: "mmc-panel" }, [
+      this.panel = el("div", { class: "mmc-panel" }, [
         ...(this.onFace ? [this.expandHost] : []),
         this.prompt.frame, this.pillsHost,
       ]),
       this.noticeHost,
       this.samplingHost,
     ]);
+
+    // The whole panel is the writing area — see `PromptBox.claim`.
+    this.prompt.claim(this.panel);
 
     loadCatalog(() => this.adoptWeights());
     this.prompt.setValue(this.state.prompt ?? "");
