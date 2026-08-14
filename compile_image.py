@@ -18,6 +18,14 @@ Two architectures, both open weights, both native in core:
   branch is a separate model — so its knobs are the official preset table
   rather than a steps widget alone.
 
+Style references are cited from the prompt the way everything else in this pack
+is: `@ref-1` is written where the reference belongs in the sentence and becomes
+the label the encoder itself gives that slot. Core's
+`TextEncodeQwenImageEditPlus` builds `Picture 1: <|vision_start|>...` per image,
+so `Picture 1` is what the model is actually reading — the same arrangement the
+video compile has with `<Picture N>`, and the same reason: the ordinal is
+decided by the payload, not by the user counting slots.
+
 The prompt is plain natural language for both. Ideogram was trained on
 structured JSON captions and its hosted magic-prompt expands text into that
 schema, but for the art-directed work this pipeline feeds, a clean sentence
@@ -27,7 +35,7 @@ modelled here at all.
 
 from dataclasses import dataclass, field
 
-from .compile import CompileError, collect_triggers
+from .compile import HANDLE_RE, CompileError, collect_triggers
 
 ARCHES = ("krea2", "ideogram4")
 DEFAULT_ARCH = "krea2"
@@ -201,18 +209,52 @@ def _parse_init(raw):
 
 
 def _parse_refs(raw):
+    """The style references, as `[(handle, filename)]` in slot order.
+
+    The handle is what the prompt cites and the position is what the encoder
+    labels, so both have to come out of here together — a bare filename list
+    could not say which `Picture N` a citation meant.
+
+    A handle is optional: a hand-written blob may carry filenames alone, and a
+    reference nothing cites still rides in as a slot. Only a citation needs one.
+    """
     refs = []
     for item in raw or []:
         filename = item.get("filename") if isinstance(item, dict) else item
         if not filename or not isinstance(filename, str):
             raise CompileError("every style reference must carry a filename")
-        refs.append(filename)
+        handle = item.get("handle") if isinstance(item, dict) else None
+        refs.append((handle if isinstance(handle, str) else None, filename))
     if len(refs) > MAX_STYLE_REFS:
         raise CompileError(
             f"at most {MAX_STYLE_REFS} style references — the Qwen edit encoder "
             f"the model reads them through has exactly three image slots"
         )
     return refs
+
+
+def _cite_refs(prompt, refs):
+    """Replace every `@handle` with the label its slot will carry.
+
+    `Picture N`, 1-based in slot order, because that is the string core's
+    `TextEncodeQwenImageEditPlus` writes in front of each image. Plain, not
+    `<Picture N>` — the angle brackets are MiniMax H3's convention and this is
+    Qwen's.
+
+    A handle-shaped token naming nothing is an error rather than prose left
+    alone, exactly as it is in the video compile: it means a reference was
+    removed and the sentence still points at it. Ordinary prose survives, since
+    only handles that name an attached reference are touched.
+    """
+    labels = {handle: f"Picture {slot}"
+              for slot, (handle, _) in enumerate(refs, start=1) if handle}
+    dangling = sorted({h for h in HANDLE_RE.findall(prompt) if h not in labels})
+    if dangling:
+        raise CompileError(
+            "the prompt references " + ", ".join("@" + h for h in dangling)
+            + " but no such style reference is attached"
+        )
+    return HANDLE_RE.sub(lambda m: labels.get(m.group(1), m.group(0)), prompt)
 
 
 def compile_prestage(data, image_size_lookup=None):
@@ -243,6 +285,10 @@ def compile_prestage(data, image_size_lookup=None):
         prompt = f"{', '.join(triggers)}, {prompt}"
 
     refs = _parse_refs(data.get("refs"))
+    # Before the arch check below, so a prompt citing a reference on Ideogram is
+    # refused for the reference rather than for the citation — one mistake, and
+    # the one the user actually made.
+    prompt = _cite_refs(prompt, refs)
     if refs and arch == "ideogram4":
         # Refused rather than dropped: Ideogram 4's model reads no reference
         # conditioning at all, and a render that silently ignored the attached
@@ -282,6 +328,9 @@ def compile_prestage(data, image_size_lookup=None):
 
     return ImagePayload(
         arch=arch, prompt=prompt, width=width, height=height,
-        checkpoint_field=checkpoint_field, loras=loras, refs=refs, init=init,
+        checkpoint_field=checkpoint_field, loras=loras,
+        # Filenames alone from here on: the handles did their work above and the
+        # graph loads these by name, in this order, into the encoder's slots.
+        refs=[filename for _, filename in refs], init=init,
         mu=mu, std=std, ratio_clamped=ratio_clamped,
     )

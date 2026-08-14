@@ -2,10 +2,17 @@
 //
 // Two classes. `PreStageEditor` is the body for the two *image* architectures,
 // Krea 2 and Ideogram 4 — same skeleton as CreatorEditor (rail, chips, panel,
-// pills, sampler row) because it is driven the same way, with a plain textarea
-// for a prompt because an image prompt references nothing by handle: the
-// Qwen-edit encoder labels the style references itself, so the mention
-// machinery would be an empty menu.
+// pills, sampler row) because it is driven the same way, and the same prompt
+// box for the same reason.
+//
+// It was a plain textarea, on the reasoning that an image prompt references
+// nothing by handle — that the Qwen-edit encoder labels the style references
+// itself, so a mention menu would be empty. The first half is true and it is
+// exactly why the second half is not: the encoder writes `Picture 1:` in front
+// of each image, so `Picture N` is a name the prompt can use, and the ordinal
+// is the payload's to decide rather than the user's to count. The chips said as
+// much all along — they have worn `@ref-1` since they existed — and there was
+// no way to write what they were offering.
 //
 // `PreStageBody` below owns the node, and on the third architecture it mounts
 // `CreatorEditor` instead — MiniMax H3's still is a video generation with one
@@ -25,7 +32,7 @@ import { openLoras } from "./loras.js";
 import { openFrameGrab } from "./framegrab.js";
 import { openChoicePopover, stepperPill, aspectGlyph, edgeSlider, PILL_GLYPH } from "./pills.js";
 import { CreatorEditor } from "./editor.js";
-import { openEditorSheet } from "./prompt.js";
+import { PromptBox, focusEnd, openEditorSheet } from "./prompt.js";
 import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { loadCatalog, catalogByFolder } from "./models.js";
@@ -69,24 +76,30 @@ export class PreStageEditor {
     this.archPill = archPill;
     this.sizes = new Map();   // filename -> {width,height}, for the adaptive canvas readout
 
-    this.promptBox = el("textarea", {
-      class: "mmc-prestage-prompt",
-      placeholder: t("Describe the image. Both models were trained on long, detailed natural-language prompts."),
-      oninput: () => {
-        this.state.prompt = this.promptBox.value;
+    // The Creator's box, over this state. `assets` is what it reads its chips
+    // and its menu from, and here that is the style references — the same
+    // `{handle, filename}` rows under a name this state does not use, so it is
+    // handed a view rather than being made to carry a second list.
+    this.prompt = new PromptBox({
+      getState: () => ({ ...this.state, assets: this.state.refs ?? [] }),
+      onInput: (text) => {
+        this.state.prompt = text;
         this.onCommit?.();
-        // ...and the window takes over once the box has run out of room. Same
-        // rule as the Creator's — see `CreatorEditor.onPromptOverflow`.
-        this.onPromptOverflow(
-          this.promptBox.scrollHeight - this.promptBox.clientHeight > 4);
       },
-      onpointerdown: (event) => event.stopPropagation(),
-      onkeyup: (event) => event.stopPropagation(),
-      // Leaving the box arms the escalation again: the waiver is about the
-      // sentence being written, not about the text. See
-      // `CreatorEditor.onPromptOverflow`.
-      onblur: () => { this.overflowWaived = false; },
+      onAttach: (row) => this.attachFromMention(row),
+      attachBlocked: () => this.refBlocked(),
+      onOverflow: (over) => this.onPromptOverflow(over),
     });
+    this.prompt.root.dataset.placeholder =
+      t("Describe the image. Both models were trained on long, detailed "
+      + "natural-language prompts. Use @ to name a style reference.");
+    // Leaving the box arms the escalation again: the waiver is about the
+    // sentence being written, not about the text. See
+    // `CreatorEditor.onPromptOverflow`.
+    this.prompt.root.addEventListener("blur", () => { this.overflowWaived = false; });
+    // What the rest of this class still calls it. The box is the editable; the
+    // frame is what gets mounted, because the box brings its own disclosure.
+    this.promptBox = this.prompt.root;
 
     this.railHost = el("div");
     this.assetsHost = el("div");
@@ -106,14 +119,14 @@ export class PreStageEditor {
       this.loraHost,
       el("div", { class: "mmc-panel" }, [
         ...(this.onFace ? [this.expandHost] : []),
-        this.promptBox, this.pillsHost,
+        this.prompt.frame, this.pillsHost,
       ]),
       this.noticeHost,
       this.samplingHost,
     ]);
 
     loadCatalog(() => this.adoptWeights());
-    this.promptBox.value = this.state.prompt ?? "";
+    this.prompt.setValue(this.state.prompt ?? "");
     this.render();
     this.probeInit();
   }
@@ -140,9 +153,39 @@ export class PreStageEditor {
   setState(state) {
     this.state = state;
     this.sizes.clear();
-    this.promptBox.value = this.state.prompt ?? "";
+    this.prompt.setValue(this.state.prompt ?? "");
     this.render();
     this.probeInit();
+  }
+
+  /** Why another style reference cannot be attached, or null. The menu asks
+   *  before it offers the input folder, and `attachFromMention` asks again
+   *  before it takes one. */
+  refBlocked() {
+    if (this.state.arch === "ideogram4") {
+      return t("Ideogram 4.0 has no local reference conditioning — switch the model "
+             + "pill to Krea 2 to use style references.");
+    }
+    if ((this.state.refs?.length ?? 0) >= S.PRESTAGE_MAX_REFS) {
+      return t("At most {max} style references — the Qwen edit encoder the model "
+             + "reads them through has exactly three image slots.",
+             { max: S.PRESTAGE_MAX_REFS });
+    }
+    return null;
+  }
+
+  /** A file picked from the @ menu, attached as a style reference. Returns its
+   *  handle so the box can write the chip, or null when it was refused — the
+   *  same contract the Creator's box has. */
+  attachFromMention(row) {
+    if (this.refBlocked()) return null;
+    // Images only. The encoder's three slots are pictures, and a clip has to be
+    // grabbed to a frame first — which the rail's own tool does.
+    if (row.kind && row.kind !== "image") return null;
+    const handle = S.nextPreStageHandle(this.state);
+    this.state.refs.push({ handle, filename: row.path });
+    this.commit();
+    return handle;
   }
 
   // ---- init image and style references --------------------------------------
@@ -316,11 +359,10 @@ export class PreStageEditor {
         this.render();
       },
     });
-    editor.promptBox.focus();
-    if (caret === "end") {
-      const end = editor.promptBox.value.length;
-      editor.promptBox.setSelectionRange?.(end, end);
-    }
+    // The box is a contenteditable now, so the caret is a range rather than an
+    // index — `focusEnd` is the same call the Creator's window makes.
+    if (caret === "end") focusEnd(editor.prompt.root);
+    else editor.prompt.root.focus();
   }
 
   renderRail() {

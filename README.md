@@ -118,6 +118,11 @@ Reference *images* get a scope dial instead: `full · person · object · scene 
 style`. On `person`, "her from @img-1" stops dragging that image's background,
 palette and pose along with the face.
 
+The PreStage's style references are cited the same way. Writing `@ref-2` becomes
+`Picture 2` — the label core's Qwen-edit encoder writes in front of that slot, so
+it is the name the model is actually reading. Which slot a reference gets is the
+payload's to decide, not yours to count.
+
 ## LoRAs
 
 ![The LoRA manager](docs/img/lora_picker.png)

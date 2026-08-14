@@ -113,7 +113,7 @@ export const css = `
    it is where the writing is. */
 .mmc-expand.on { opacity: 1; color: var(--mmc-accent); border-color: rgba(240,166,60,.45); }
 /* Room for it, so a long first line does not run under the button. */
-.mmc-panel > .mmc-prompt-fold > .mmc-prompt, .mmc-panel > .mmc-prestage-prompt { padding-right: 30px; }
+.mmc-panel > .mmc-prompt-fold > .mmc-prompt { padding-right: 30px; }
 
 /* The window the face's corner control opens — and the one a timeline segment
    opens over the strip. One window: both are the same node body over the same
