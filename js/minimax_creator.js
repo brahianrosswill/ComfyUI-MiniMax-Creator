@@ -9,6 +9,7 @@ import { PreStageBody } from "./minimax_creator/prestage.js";
 import { Satellite } from "./minimax_creator/satellite.js";
 import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
 import { primeSettings } from "./minimax_creator/api.js";
+import { openPresetLibrary } from "./minimax_creator/presetlib.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
@@ -360,6 +361,13 @@ app.registerExtension({
     const original = nodeType.prototype.getExtraMenuOptions;
     nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
       original?.apply(this, arguments);
+      // The path for a node the user has right-clicked rather than opened. The
+      // target is read late, off the mounted body — a node whose body has not
+      // been built yet opens the library read-only rather than not at all.
+      options.push({
+        content: t("Presets…"),
+        callback: () => openPresetLibrary({ target: this.mmcBody?.presetTarget?.() ?? null }),
+      });
       options.push({
         content: t("Copy {name} JSON", { name }),
         callback: () => {

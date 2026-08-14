@@ -305,6 +305,30 @@ async function ask(path) {
 }
 
 /**
+ * The workflow a finished render carries inside itself.
+ *
+ * Both save nodes embed it — the MP4 in its container tags, the PNG in its text
+ * chunks — so that a render dropped onto the canvas rebuilds the node that made
+ * it. Nothing in the browser can read either, hence the route.
+ *
+ * Resolves to `{prompt, workflow}`, both parsed and either possibly null. The
+ * useful one is `prompt`: it is the API form, whose inputs are keyed by *name*,
+ * where `workflow.nodes[].widgets_values` is a positional array that shifts
+ * under the node whenever a widget is added. Not cached — this is one request
+ * when a render is picked, and it is read for its exact bytes on disk.
+ */
+export async function renderMeta(path) {
+  const response = await api.fetchApi(
+    `/minimax_creator/render_meta?filename=${encodeURIComponent(path)}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || t("could not read that render ({status})", { status: response.status }));
+  }
+  if (body.error) throw new Error(body.error);
+  return { prompt: body.prompt ?? null, workflow: body.workflow ?? null };
+}
+
+/**
  * Core's /view, the same URL LoadImage previews use.
  *
  * Takes the input-relative path ("3d/foo.png"), not an asset row: only the path
@@ -345,6 +369,28 @@ export function thumbUrl(path, version) {
   const params = new URLSearchParams({ filename: path });
   if (version) params.set("v", String(version));
   return api.apiURL(`/minimax_creator/thumb?${params}`);
+}
+
+/**
+ * The URL that shows one media file as a still picture, or null for a file that
+ * has none.
+ *
+ * The two routes above answer for different kinds and the choice is not
+ * cosmetic: an image is core's `/view` re-encoded to webp, while a clip has to
+ * come through this pack's thumb route, because an `<img>` pointed at an `.mp4`
+ * renders nothing at all. Audio has no picture and gets an icon from whoever is
+ * drawing.
+ *
+ * One implementation, because every grid in this pack asks the same question —
+ * the picker's cells, the gallery, the preset library's cards. Takes an asset row
+ * as the listing produces it (`{path, kind, mtime}`), which is also the shape
+ * anything storing a reference to one should keep it in.
+ */
+export function stillUrl(asset) {
+  if (!asset?.path) return null;
+  if (asset.kind === "video") return thumbUrl(asset.path, asset.mtime);
+  if (asset.kind === "image") return viewUrl(asset.path, { preview: true });
+  return null;
 }
 
 /**

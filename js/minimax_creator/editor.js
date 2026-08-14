@@ -16,6 +16,7 @@ import { t } from "./i18n.js";
 import { openPicker } from "./picker.js";
 import { openLoras } from "./loras.js";
 import { openSettings } from "./settings.js";
+import { openPresetLibrary } from "./presetlib.js";
 import { openTrim, trimLabel } from "./trim.js";
 import { PromptBox, focusEnd, openEditorSheet } from "./prompt.js";
 import { RefinePanel, refineButton, refine } from "./refine.js";
@@ -94,6 +95,11 @@ export class CreatorEditor {
    * @param {boolean} [options.settingsTool]  false where the settings page has
    *   nothing to say about what this body makes. It holds the video rate
    *   control, and a pre-stage writes PNGs.
+   * @param {() => object} [options.presetTarget]  what the preset library saves
+   *   from and applies to here, when this body is somewhere presets make sense.
+   *   Absent on a body whose owner already offers the tool for the thing this
+   *   editor is one card of — the piece's own face passes its piece's target,
+   *   and the strip's card editor passes that card's.
    * @param {string} [options.editorTitle]  what to call the window the face's
    *   prompt opens — "Shot" for a clip, "Still" for a pre-stage. Node bodies
    *   only: in a modal the body is already the window.
@@ -122,7 +128,8 @@ export class CreatorEditor {
                 routeOf = null, setRoute = null, preStage = null, pieceView = null,
                 durationPill = true, extraPills = null, extraTools = null,
                 settingsTool = true, stage = null, editorTitle = null,
-                piece = null, afterPanel = null }) {
+                piece = null, afterPanel = null, presetTarget = null }) {
+    this.presetTarget = presetTarget;
     this.piece = piece ?? state;
     this.afterPanel = afterPanel;
     // What the window this body opens into is called. A node face is a preview
@@ -748,6 +755,14 @@ export class CreatorEditor {
         ...(this.refineTarget ? [refineButton({ run: () => this.refine() })] : []),
       ]),
       el("div", { class: "mmc-rail-group" }, [
+        // With the machine's cluster rather than the piece's: a preset outlives
+        // this generation the way the gallery and the settings do, and applying
+        // one is reaching for something already made rather than making it.
+        ...(this.presetTarget ? [el("button", {
+          class: "mmc-tool",
+          title: t("Save this setup so you can put it back, or apply one you saved before"),
+          onclick: () => openPresetLibrary({ target: this.presetTarget() }).then(() => this.render()),
+        }, [el("span", { class: "mmc-tool-icon" }, [icon("star")]), el("span", { text: t("Presets") })])] : []),
         // Ungated, and here rather than only on the stage: the stage grows a
         // Gallery chip when a render finishes, which is exactly the moment you
         // do not need one — before the first render of a session there was no

@@ -17,6 +17,7 @@ import { css as settings } from "./styles/settings.js";
 import { css as timeline } from "./styles/timeline.js";
 import { css as refine } from "./styles/refine.js";
 import { css as prestage } from "./styles/prestage.js";
+import { css as presets } from "./styles/presets.js";
 
 const CSS = [
   base,
@@ -30,6 +31,9 @@ const CSS = [
   timeline,
   refine,
   prestage,
+  // After the picker's: the library reuses its modal, tabs and shelves and
+  // overrides the grid inside them.
+  presets,
 ].join("");
 
 export function installStyles() {

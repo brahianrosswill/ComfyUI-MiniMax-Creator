@@ -32,6 +32,8 @@ import { openLoras } from "./loras.js";
 import { openFrameGrab } from "./framegrab.js";
 import { openChoicePopover, stepperPill, aspectGlyph, edgeSlider, PILL_GLYPH } from "./pills.js";
 import { CreatorEditor } from "./editor.js";
+import { openPresetLibrary } from "./presetlib.js";
+import * as P from "./presets.js";
 import { PromptBox, focusEnd, openEditorSheet } from "./prompt.js";
 import { samplingBar, widgetIO } from "./sampling.js";
 import { Stage } from "./stage.js";
@@ -62,7 +64,11 @@ export class PreStageEditor {
    * @param {() => string|number} options.nodeId
    */
   constructor({ state, onCommit, samplingWidgets, onWidgetChange, nodeId,
-                stage = null, archPill = null }) {
+                stage = null, archPill = null, presetTarget = null }) {
+    // Supplied by `PreStageBody` for the same reason the arch pill is: a preset
+    // can change the architecture, and remounting the body is not something the
+    // body being remounted can do.
+    this.presetTarget = presetTarget;
     this.state = state;
     this.onCommit = onCommit;
     this.samplingWidgets = samplingWidgets;
@@ -389,6 +395,9 @@ export class PreStageEditor {
       tool(t("Add LoRA"), "effect",
            t("Manage the LoRAs patched onto the image model. Krea LoRAs train on RAW and apply on Turbo too."),
            () => this.manageLoras()),
+      tool(t("Presets"), "star",
+           t("Save this setup so you can put it back, or apply one you saved before"),
+           () => openPresetLibrary({ target: this.presetTarget?.() ?? null })),
     ]);
   }
 
@@ -800,6 +809,7 @@ export class PreStageBody {
       nodeId: this.nodeId,
       stage: this.stage,
       archPill: () => this.renderArchPill(),
+      presetTarget: () => this.presetTarget(),
     });
   }
 
@@ -824,6 +834,10 @@ export class PreStageBody {
       // The settings page holds the video rate control and this node writes
       // PNGs, so it would be a button over nothing.
       settingsTool: false,
+      // The pre-stage's, not the request's: what you save from this node is
+      // this node, and on the H3 branch the request is only where it keeps its
+      // files. Same reasoning as the piece's face wearing its one shot.
+      presetTarget: () => this.presetTarget(),
       extraPills: () => [this.renderArchPill(), ...this.renderStillPills()],
       extraTools: () => [this.renderFrameGrabTool()],
       setRoute: (route) => {
@@ -837,6 +851,37 @@ export class PreStageBody {
   /** See `sampling.widgetIO`. */
   widgetIO() {
     return widgetIO(() => this.samplingWidgets, () => this.onWidgetChange?.());
+  }
+
+  /**
+   * What the preset library saves from this node and applies back to it.
+   *
+   * Owned here rather than by the editor because applying one can change the
+   * architecture, and each architecture has a body of its own — so the apply
+   * ends in `mount`, which is the same remount the arch pill does.
+   *
+   * The cover comes off the stage, exactly as the Creator's does: a still this
+   * node just made is stamped with this node's id, so it is already sitting in
+   * `stage.result` by the time anyone presses Save.
+   */
+  presetTarget() {
+    return {
+      scope: "prestage",
+      label: t("this pre-stage"),
+      arch: () => this.state.arch,
+      capture: () => ({
+        data: P.capturePreStage(this.state, this.widgetIO()),
+        cover: P.coverFromResult(this.stage?.result),
+        defaultName: (this.promptOf() || "").trim().split("\n")[0].slice(0, 48),
+      }),
+      apply: (body, keys, from) => {
+        P.applyToPreStage(body, keys, this.state, this.widgetIO(), { from });
+        this.onCommit?.();
+        // Not `commit`: the architecture may have moved, and the body that draws
+        // one architecture cannot draw another.
+        this.mount();
+      },
+    };
   }
 
   // ---- the model pill --------------------------------------------------------

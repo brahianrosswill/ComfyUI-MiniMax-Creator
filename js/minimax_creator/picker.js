@@ -2,7 +2,7 @@
 // a slot counter that stops you selecting more than the model accepts.
 
 import { el, ICONS, svg, icon, mountOverlay, dismissable } from "./dom.js";
-import { listAssets, listingTruncated, viewUrl, thumbUrl, upload, moveAsset,
+import { listAssets, listingTruncated, viewUrl, stillUrl, upload, moveAsset,
          deleteAsset, loadPickerPrefs, savePickerPrefs } from "./api.js";
 import { openTrim, trimLabel } from "./trim.js";
 import { t } from "./i18n.js";
@@ -688,15 +688,17 @@ class Picker {
       },
     });
 
-    if (asset.kind === "image") {
+    // Which route shows this file is `api.stillUrl`'s to know — the same
+    // question the preset library's cards ask, answered in one place.
+    const still = stillUrl(asset);
+    if (still) {
       // Filenames reach the DOM only as attributes/text, never as markup.
-      cell.appendChild(el("img", { src: viewUrl(asset.path, { preview: true }), loading: "lazy", alt: asset.name }));
-    } else if (asset.kind === "video") {
-      // A server-decoded still, not a <video>: see thumbUrl. A clip the decoder
-      // cannot open answers 404, and the cell falls back to the same icon tile
-      // audio uses rather than showing a broken image.
-      const thumb = el("img", { src: thumbUrl(asset.path, asset.mtime), loading: "lazy", alt: asset.name });
-      thumb.addEventListener("error", () => thumb.replaceWith(this.fallback(asset, "video")));
+      const thumb = el("img", { src: still, loading: "lazy", alt: asset.name });
+      // A clip the decoder cannot open answers 404, and the cell falls back to
+      // the same icon tile audio uses rather than showing a broken image.
+      if (asset.kind === "video") {
+        thumb.addEventListener("error", () => thumb.replaceWith(this.fallback(asset, "video")));
+      }
       cell.appendChild(thumb);
     } else {
       cell.appendChild(this.fallback(asset, "audio"));

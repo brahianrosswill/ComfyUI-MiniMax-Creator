@@ -21,6 +21,7 @@ and only the server can hand both ends the same path.
 """
 
 import asyncio
+import json
 import os
 
 from aiohttp import web
@@ -154,6 +155,69 @@ async def probe_asset(request):
         return web.json_response(await loop.run_in_executor(None, _read_header, path))
     except Exception as exc:  # noqa: BLE001 — an unreadable file is the caller's problem, later
         return web.json_response({"has_audio": None, "error": str(exc)})
+
+
+def _read_embedded(path):
+    """The `prompt` and `workflow` a finished render carries in its own file.
+
+    Both save nodes write them — `MiniMaxH3Save` into the MP4's container tags,
+    `MiniMaxH3SaveImage` into the PNG's text chunks — for the reason core's
+    savers do: a render dropped back onto the canvas rebuilds the node that made
+    it. Which means the file already holds every field a preset wants, and the
+    only thing missing was a way for the browser to read it.
+
+    Two readers because they are two containers, chosen by extension rather than
+    by trying one and catching: `av` cannot see a PNG's text chunks and PIL
+    cannot open an MP4, so a fallback chain here would only turn "the wrong
+    reader" into "no metadata", which is the same answer for a file that has
+    none and a file we failed to read.
+
+    A value that is not JSON comes back as None rather than raising. These tags
+    are written by whoever wrote the file, which is not always this pack — a
+    render remuxed by ffmpeg keeps the tag and can lose the end of it.
+    """
+    if os.path.splitext(path)[1].lower() in (".png", ".webp"):
+        from PIL import Image
+
+        with Image.open(path) as image:
+            raw = {key: image.info.get(key) for key in ("prompt", "workflow")}
+    else:
+        import av  # ComfyUI's own decoder stack, as `_read_header` above.
+
+        with av.open(path) as container:
+            raw = {key: container.metadata.get(key) for key in ("prompt", "workflow")}
+
+    out = {}
+    for key, value in raw.items():
+        try:
+            out[key] = json.loads(value) if value else None
+        except (TypeError, ValueError):
+            out[key] = None
+    return out
+
+
+@PromptServer.instance.routes.get("/minimax_creator/render_meta")
+async def render_meta(request):
+    """The workflow embedded in one render, so a preset can be taken from it.
+
+    A read route and not the userdata API, which is where the rest of the preset
+    feature lives: this is a question about a file on this machine's disk, and
+    the browser cannot open one. It does not weaken the argument `settings.py`
+    makes — nothing here is read while a prompt executes, this only serves a
+    file that a finished execution already wrote.
+
+    `{prompt: null, workflow: null}` for a render that carries neither, with a
+    200: a file saved under `--disable-metadata` is an ordinary file and not an
+    error, and the caller says so in words the user can act on.
+    """
+    path = _input_path(request)
+    if path is None:
+        return web.json_response({"error": "not in the input or output folder"}, status=404)
+    try:
+        loop = asyncio.get_running_loop()
+        return web.json_response(await loop.run_in_executor(None, _read_embedded, path))
+    except Exception as exc:  # noqa: BLE001 — an unreadable file is the caller's problem
+        return web.json_response({"prompt": None, "workflow": None, "error": str(exc)})
 
 
 @PromptServer.instance.routes.get("/minimax_creator/thumb")
